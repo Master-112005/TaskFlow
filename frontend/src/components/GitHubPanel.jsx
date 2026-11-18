@@ -10,10 +10,15 @@ const STATE_BADGE = {
 /**
  * Slide-in panel listing GitHub issues (mode="issues")
  * or pull requests (mode="pulls") for a project.
+ * The "+" button in the header opens a form to create a new one.
  */
 export default function GitHubPanel({ mode, project, onClose }) {
   const [items, setItems] = useState(null)
   const [error, setError] = useState('')
+  const [creating, setCreating] = useState(false) // create form open
+  const [branches, setBranches] = useState(null) // for the PR form
+  const [busy, setBusy] = useState(false)
+  const [formError, setFormError] = useState('')
   const isIssues = mode === 'issues'
   const endpoint = isIssues ? 'issues' : 'pulls'
 
@@ -29,23 +34,140 @@ export default function GitHubPanel({ mode, project, onClose }) {
     }
   }
 
+  async function loadBranches() {
+    setBranches(null)
+    try {
+      const { data } = await api.get(`/projects/${project.id}/branches`)
+      setBranches(data)
+    } catch (e) {
+      setBranches([])
+    }
+  }
+
   useEffect(() => {
     if (project) load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id, endpoint])
+
+  // switching panels resets the form state
+  useEffect(() => {
+    setCreating(false)
+    setFormError('')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode])
+
+  function openForm() {
+    setCreating(true)
+    setFormError('')
+    if (!isIssues) loadBranches()
+  }
+
+  async function submitCreate(e) {
+    e.preventDefault()
+    const f = e.target.elements
+    setBusy(true)
+    setFormError('')
+    try {
+      if (isIssues) {
+        await api.post(`/projects/${project.id}/issues`, {
+          title: f.title.value.trim(),
+          body: f.body.value.trim()
+        })
+      } else {
+        await api.post(`/projects/${project.id}/pulls`, {
+          title: f.title.value.trim(),
+          head: f.head.value,
+          base: f.base.value,
+          body: f.body.value.trim(),
+          draft: f.draft.checked
+        })
+      }
+      setCreating(false)
+      load()
+    } catch (err) {
+      setFormError(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const sortedBranches = branches ? [...branches].sort((a, b) => a.name.localeCompare(b.name)) : []
 
   return (
     <aside className={`side-panel ${mode}`}>
       <div className="panel-head">
         <h2>{isIssues ? 'Issues' : 'Pull Requests'}</h2>
         <div>
+          {!creating && (
+            <button className="panel-add" onClick={openForm} title={isIssues ? 'New issue' : 'New pull request'}>
+              +
+            </button>
+          )}
           <button className="btn ghost" onClick={load} title="Refresh">Refresh</button>
-          <button className="btn ghost" onClick={onClose} title="Close">Close</button>
+          {creating && (
+            <button className="btn ghost" onClick={() => { setCreating(false); setFormError('') }} title="Cancel">
+              Cancel
+            </button>
+          )}
         </div>
       </div>
       <div className="panel-sub">
         {project.repoOwner}/{project.repoName}
       </div>
+      {creating && (
+        <form className="panel-form" onSubmit={submitCreate}>
+          {isIssues ? (
+            <>
+              <label>
+                Title
+                <input name="title" required maxLength={256} placeholder="What is the issue about?" autoFocus />
+              </label>
+              <label>
+                Description
+                <textarea name="body" rows={5} placeholder="Describe the problem (optional)" />
+              </label>
+            </>
+          ) : (
+            <>
+              <label>
+                Title
+                <input name="title" required maxLength={256} placeholder="What does this pull request do?" autoFocus />
+              </label>
+              <label>
+                Base branch (merge into)
+                {branches === null ? (
+                  <select name="base" disabled><option>Loading branches…</option></select>
+                ) : (
+                  <select name="base" required>
+                    {sortedBranches.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+                  </select>
+                )}
+              </label>
+              <label>
+                Head branch (merge from)
+                {branches === null ? (
+                  <select name="head" disabled><option>Loading branches…</option></select>
+                ) : (
+                  <select name="head" required>
+                    {sortedBranches.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+                  </select>
+                )}
+              </label>
+              <label>
+                Description
+                <textarea name="body" rows={4} placeholder="Describe the changes (optional)" />
+              </label>
+              <label className="panel-check">
+                <input type="checkbox" name="draft" /> Open as draft
+              </label>
+            </>
+          )}
+          <button className="btn primary full" disabled={busy || (!isIssues && branches === null)}>
+            {busy ? 'Creating…' : isIssues ? 'Create issue' : 'Open pull request'}
+          </button>
+          {formError && <div className="form-error">{formError}</div>}
+        </form>
+      )}
       <div className="panel-body">
         {items === null && <div className="panel-loading">Loading…</div>}
         {items && items.length === 0 && (

@@ -10,4 +10,5 @@ import java.util.Optional;
 public interface ProjectRepository extends JpaRepository<Project, Long> {
     Optional<Project> findByInviteCodeIgnoreCase(String inviteCode);
     List<Project> findByCreatedByOrderByCreatedAtDesc(User user);
+    List<Project> findByGithubToken(String githubToken);
 }

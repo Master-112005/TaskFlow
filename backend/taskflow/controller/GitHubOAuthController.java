@@ -39,13 +39,12 @@ public class GitHubOAuthController {
         this.linkedAccounts = linkedAccounts;
     }
 
-    /** Admin clicks "Connect GitHub" -> frontend opens this GitHub consent URL. */
+    /** "Connect GitHub" -> frontend opens this GitHub consent URL (admins and normal users). */
     @GetMapping("/api/github/connect-url")
     public Map<String, String> connectUrl(@RequestParam(required = false) String returnTo,
                                           @RequestParam(required = false) String picker,
                                           Authentication auth) {
         User user = access.requireUser(auth);
-        access.requireAdmin(user);
         // The OAuth redirect may only land on one of these two pages.
         String target = "/profile".equals(returnTo) ? "/profile" : "/admin";
         // picker=select forces GitHub's account picker (needed when adding another account).
@@ -53,11 +52,10 @@ public class GitHubOAuthController {
         return Map.of("url", oauth.buildAuthorizeUrl(user, target, selectAccount));
     }
 
-    /** All GitHub accounts linked to the current admin (profile page, repo picker). */
+    /** All accounts linked to the current user (profile page, repo picker). */
     @GetMapping("/api/github/accounts")
     public List<LinkedAccountDto> accounts(Authentication auth) {
         User user = access.requireUser(auth);
-        access.requireAdmin(user);
         return oauth.listAccounts(user);
     }
 
@@ -65,7 +63,6 @@ public class GitHubOAuthController {
     @PostMapping("/api/github/accounts/{id}/remove")
     public Map<String, Object> removeAccount(@PathVariable long id, Authentication auth) {
         User user = access.requireUser(auth);
-        access.requireAdmin(user);
         boolean activeChanged = oauth.removeAccount(user, id);
         return Map.of("removed", true, "activeChanged", activeChanged);
     }
@@ -74,7 +71,6 @@ public class GitHubOAuthController {
     @PostMapping("/api/accounts/linkedin")
     public LinkedAccountDto addLinkedIn(@RequestBody Map<String, String> body, Authentication auth) {
         User user = access.requireUser(auth);
-        access.requireAdmin(user);
         return oauth.addLinkedIn(user, body.get("url"));
     }
 
@@ -91,7 +87,8 @@ public class GitHubOAuthController {
                     : "?github=connected&login=" + connected.login();
             target = frontendUrl + connected.returnTo() + landing;
         } catch (Exception e) {
-            target = frontendUrl + "/admin?github=error";
+            // /profile is reachable for both admins and normal users
+            target = frontendUrl + "/profile?github=error";
         }
         return ResponseEntity.status(302).location(URI.create(target)).build();
     }

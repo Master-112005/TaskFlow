@@ -735,7 +735,7 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .issue-link { display: block; margin-top: 12px; font-size: 13.5px; }
 .chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 6px 4px; }
 .chat-empty { color: var(--muted); text-align: center; margin-top: 60px; }
-.chat-msg { max-width: 72%; }
+.chat-msg { max-width: 72%; width: fit-content; }
 .chat-msg.mine { align-self: flex-end; }
 .msg-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; }
 .chat-msg.mine .msg-meta { justify-content: flex-end; }
@@ -869,6 +869,61 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
   padding: 14px 18px 4px;
 }
 .panel-head h2 { font-size: 17px; }
+
+/* "+" button to create a new issue / pull request */
+.panel-add {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 9px;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  margin-right: 4px;
+  vertical-align: middle;
+  transition: filter .15s ease;
+}
+.panel-add:hover { filter: brightness(1.25); border-color: var(--accent); color: var(--accent); }
+
+/* create-issue / create-pull-request form inside the panel */
+.panel-form {
+  margin: 14px 14px 0;
+  padding: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.panel-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.panel-form textarea {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 9px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  width: 100%;
+}
+.panel-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.panel-check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+}
+.panel-check input { width: auto; }
+
 .panel-sub { padding: 0 18px 12px; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--border); }
 .panel-body { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .panel-loading, .panel-empty { color: var(--muted); text-align: center; margin-top: 30px; }

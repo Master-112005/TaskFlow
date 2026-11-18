@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import taskflow.dto.GitHubDtos.LinkedAccountDto;
 import taskflow.model.LinkedGithubAccount;
+import taskflow.model.Project;
 import taskflow.model.User;
+import taskflow.model.UserType;
 import taskflow.repository.LinkedGithubAccountRepository;
 import taskflow.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,7 +29,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * GitHub OAuth ("Sign in with GitHub" style) flow for admins:
+ * GitHub OAuth ("Sign in with GitHub" style) flow for all users:
  * 1. buildAuthorizeUrl() -> GitHub consent screen (state carries who is connecting)
  * 2. GitHub redirects to /api/github/oauth/callback with ?code&state
  * 3. complete() exchanges the code for an access token and stores it on the user.
@@ -37,6 +39,16 @@ public class GitHubOAuthService {
 
     /** A user can link at most this many GitHub accounts. */
     public static final int MAX_GITHUB_ACCOUNTS = 3;
+
+    /** Normal users can link only one GitHub account (admins up to MAX_GITHUB_ACCOUNTS). */
+    public static final int MAX_GITHUB_ACCOUNTS_NORMAL = 1;
+
+    /** GitHub limit for this user: normal users get one account, admins get three. */
+    public int maxGitHubAccounts(User user) {
+        return user.getUserType() == UserType.NORMAL
+                ? MAX_GITHUB_ACCOUNTS_NORMAL
+                : MAX_GITHUB_ACCOUNTS;
+    }
 
     private record Pending(String email, Instant createdAt, String returnTo) {
     }
@@ -56,6 +68,7 @@ public class GitHubOAuthService {
 
     private final UserRepository users;
     private final LinkedGithubAccountRepository linkedAccounts;
+    private final taskflow.repository.ProjectRepository projects;
     private final ObjectMapper mapper = new ObjectMapper();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -64,9 +77,11 @@ public class GitHubOAuthService {
     /** state -> who started the flow (in-memory, expires after 10 minutes). */
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
 
-    public GitHubOAuthService(UserRepository users, LinkedGithubAccountRepository linkedAccounts) {
+    public GitHubOAuthService(UserRepository users, LinkedGithubAccountRepository linkedAccounts,
+                              taskflow.repository.ProjectRepository projects) {
         this.users = users;
         this.linkedAccounts = linkedAccounts;
+        this.projects = projects;
     }
 
     public String buildAuthorizeUrl(User user, String returnTo, boolean selectAccount) {
@@ -116,14 +131,28 @@ public class GitHubOAuthService {
 
         // Upsert the linked account (re-connecting refreshes the token).
         LinkedGithubAccount existing = linkedAccounts.findByUserAndUsername(user, login).orElse(null);
+        // Capture the tokens this user had for THIS GitHub login before the
+        // refresh — they may still be stored on the user's active pointer and
+        // on projects this user created; they must be replaced by the new token.
+        List<String> staleTokens = new java.util.ArrayList<>();
+        if (existing != null && existing.getToken() != null) {
+            staleTokens.add(existing.getToken());
+        }
+        if (user.getGithubToken() != null && linkedAccounts.findByUserAndToken(user, user.getGithubToken())
+                .map(a -> login.equals(a.getUsername())).orElse(false)) {
+            staleTokens.add(user.getGithubToken());
+        }
         if (existing == null) {
-            // limit: at most 3 distinct GitHub accounts per user
+            // limit: normal users one GitHub account, admins up to three
             long count = linkedAccounts.findByUserOrderByConnectedAtAsc(user).stream()
                     .filter(a -> LinkedGithubAccount.GITHUB.equals(a.getProvider()))
                     .count();
-            if (count >= MAX_GITHUB_ACCOUNTS) {
+            int max = maxGitHubAccounts(user);
+            if (count >= max) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "You can link up to " + MAX_GITHUB_ACCOUNTS + " GitHub accounts — remove one first");
+                        max == 1
+                                ? "Normal users can link only one GitHub account — remove it first to link another"
+                                : "You can link up to " + max + " GitHub accounts — remove one first");
             }
         }
         LinkedGithubAccount account = existing != null ? existing : new LinkedGithubAccount();
@@ -135,11 +164,25 @@ public class GitHubOAuthService {
         account.setToken(accessToken);
         linkedAccounts.save(account);
 
-        // Keep the previously active account active; only pick a default when none exists.
-        if (user.getGithubToken() == null) {
+        // Refresh the user's active pointer when it pointed at this login's old
+        // (now stale) token — re-connecting must heal the default account too.
+        if (user.getGithubToken() == null || staleTokens.contains(user.getGithubToken())) {
             user.setGithubToken(accessToken);
         }
         users.save(user);
+
+        // Heal projects whose stored token is the old one: projects read/write
+        // GitHub through this token, so a stale token would break Issues and
+        // Pull Requests for the whole team until someone re-connected.
+        if (!staleTokens.isEmpty()) {
+            for (String stale : staleTokens) {
+                for (Project project : projects.findByGithubToken(stale)) {
+                    project.setGithubToken(accessToken);
+                    projects.save(project);
+                }
+            }
+        }
+
         return new Connected(login, existing != null, p.returnTo());
     }
 

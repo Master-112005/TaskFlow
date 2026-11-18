@@ -1,5 +1,8 @@
 package taskflow.controller;
 
+import taskflow.dto.GitHubDtos.BranchDto;
+import taskflow.dto.GitHubDtos.CreateIssueRequest;
+import taskflow.dto.GitHubDtos.CreatePullRequest;
 import taskflow.dto.GitHubDtos.IssueDto;
 import taskflow.dto.GitHubDtos.PullDto;
 import taskflow.dto.GitHubDtos.RepoDto;
@@ -261,21 +264,122 @@ public class ProjectController {
 
     @GetMapping("/{id}/issues")
     public List<IssueDto> issues(@PathVariable long id, Authentication auth) {
-        Project project = access.requireAccess(id, access.requireUser(auth));
-        return gitHub.listIssues(project.getRepoOwner(), project.getRepoName(), project.getGithubToken());
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.listIssues(project.getRepoOwner(), project.getRepoName(), project.getGithubToken()),
+                () -> gitHub.listIssues(project.getRepoOwner(), project.getRepoName(), user.getGithubToken()));
     }
 
     /** Single issue (used when someone clicks #123 in the chat). */
     @GetMapping("/{id}/issues/{number}")
     public IssueDto issue(@PathVariable long id, @PathVariable long number, Authentication auth) {
-        Project project = access.requireAccess(id, access.requireUser(auth));
-        return gitHub.getIssue(project.getRepoOwner(), project.getRepoName(), number, project.getGithubToken());
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.getIssue(project.getRepoOwner(), project.getRepoName(), number, project.getGithubToken()),
+                () -> gitHub.getIssue(project.getRepoOwner(), project.getRepoName(), number, user.getGithubToken()));
+    }
+
+    /** Create a new issue in the project's repo (any team member). */
+    @PostMapping("/{id}/issues")
+    public IssueDto createIssue(@PathVariable long id, @Valid @RequestBody CreateIssueRequest request,
+                                Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        String title = request.title().trim();
+        String body = request.body() == null ? "" : request.body().trim();
+        return withProjectFallback(user, project,
+                () -> gitHub.createIssue(project.getRepoOwner(), project.getRepoName(), user.getGithubToken(), title, body),
+                () -> gitHub.createIssue(project.getRepoOwner(), project.getRepoName(), project.getGithubToken(), title, body));
+    }
+
+    /** Branches of the project's repo (for the pull-request form). */
+    @GetMapping("/{id}/branches")
+    public List<BranchDto> branches(@PathVariable long id, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.listBranches(project.getRepoOwner(), project.getRepoName(), project.getGithubToken()),
+                () -> gitHub.listBranches(project.getRepoOwner(), project.getRepoName(), user.getGithubToken()));
+    }
+
+    /** Open a pull request in the project's repo (any team member). */
+    @PostMapping("/{id}/pulls")
+    public PullDto createPull(@PathVariable long id, @Valid @RequestBody CreatePullRequest request,
+                              Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        String title = request.title().trim();
+        String head = request.head().trim();
+        String base = request.base().trim();
+        String body = request.body() == null ? "" : request.body().trim();
+        boolean draft = Boolean.TRUE.equals(request.draft());
+        return withProjectFallback(user, project,
+                () -> gitHub.createPull(project.getRepoOwner(), project.getRepoName(), user.getGithubToken(), title, head, base, body, draft),
+                () -> gitHub.createPull(project.getRepoOwner(), project.getRepoName(), project.getGithubToken(), title, head, base, body, draft));
+    }
+
+    /**
+     * Creates issues / pull requests with the acting user's own GitHub token so
+     * GitHub attributes them to that account. If that token is dead (expired /
+     * revoked) or lacks access to the project's repo, it transparently retries
+     * with the project's stored token so the team member is never blocked.
+     */
+    private <T> T withProjectFallback(User user, Project project,
+                                      java.util.function.Supplier<T> withUserToken,
+                                      java.util.function.Supplier<T> withProjectToken) {
+        if (user.getGithubToken() == null || user.getGithubToken().isBlank()) {
+            return withProjectToken.get();
+        }
+        try {
+            return withUserToken.get();
+        } catch (ResponseStatusException e) {
+            if (retryWithFallback(e) && hasText(project.getGithubToken())) {
+                return withProjectToken.get();
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Reads (issue / pull request / branch lists) normally use the project's
+     * stored token. If that token is dead or lacks access, they transparently
+     * retry with the acting member's own GitHub token — so the list keeps
+     * working for members even when the project's connection broke.
+     */
+    private <T> T readWithFallback(User user, Project project,
+                                   java.util.function.Supplier<T> withProjectToken,
+                                   java.util.function.Supplier<T> withUserToken) {
+        if (project.getGithubToken() == null || project.getGithubToken().isBlank()) {
+            return withUserToken.get();
+        }
+        try {
+            return withProjectToken.get();
+        } catch (ResponseStatusException e) {
+            if (retryWithFallback(e) && hasText(user.getGithubToken())) {
+                return withUserToken.get();
+            }
+            throw e;
+        }
+    }
+
+    /** Fall back when GitHub rejected the token (400) or lacks repo access (403). */
+    private boolean retryWithFallback(ResponseStatusException e) {
+        return e.getStatusCode() == HttpStatus.BAD_REQUEST || e.getStatusCode() == HttpStatus.FORBIDDEN;
+    }
+
+    private boolean hasText(String s) {
+        return s != null && !s.isBlank();
     }
 
     @GetMapping("/{id}/pulls")
     public List<PullDto> pulls(@PathVariable long id, Authentication auth) {
-        Project project = access.requireAccess(id, access.requireUser(auth));
-        return gitHub.listPulls(project.getRepoOwner(), project.getRepoName(), project.getGithubToken());
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.listPulls(project.getRepoOwner(), project.getRepoName(), project.getGithubToken()),
+                () -> gitHub.listPulls(project.getRepoOwner(), project.getRepoName(), user.getGithubToken()));
     }
 
     private void joinProject(Project project, User user) {

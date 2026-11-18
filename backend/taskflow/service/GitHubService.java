@@ -2,6 +2,7 @@ package taskflow.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import taskflow.dto.GitHubDtos.BranchDto;
 import taskflow.dto.GitHubDtos.IssueDto;
 import taskflow.dto.GitHubDtos.PullDto;
 import taskflow.dto.GitHubDtos.RepoDto;
@@ -104,6 +105,91 @@ public class GitHubService {
         List<PullDto> pulls = new ArrayList<>();
         root.forEach(n -> pulls.add(PullDto.from(n)));
         return pulls;
+    }
+
+    /**
+     * POST to the GitHub API. GitHub's own validation errors (422) are surfaced
+     * with their message so the user sees why e.g. a pull request was rejected
+     * ("No commits between base and head"), never as HTTP 401.
+     */
+    private JsonNode postJson(String path, String token, String json) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(API + path))
+                .timeout(Duration.ofSeconds(30))
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "TaskFlow")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(json));
+        if (token != null && !token.isBlank()) {
+            builder.header("Authorization", "Bearer " + token.trim());
+        }
+
+        try {
+            HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            int status = response.statusCode();
+            // Same rule as getJson(): a rejected token must never become HTTP 401,
+            // or the frontend would force a logout.
+            if (status == 401) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "This GitHub account's connection has expired or was revoked — connect it again from your profile");
+            }
+            if (status == 403) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "GitHub refused the request (missing scope — the token needs 'repo' permission, or rate limit).");
+            }
+            if (status == 422) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, githubMessage(response.body(), "GitHub rejected the request"));
+            }
+            if (status >= 300) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "GitHub API returned status " + status);
+            }
+            return mapper.readTree(response.body());
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Could not reach GitHub: " + e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Request to GitHub was interrupted");
+        }
+    }
+
+    /** Pulls the human-readable message out of a GitHub error response body. */
+    private String githubMessage(String body, String fallback) {
+        try {
+            JsonNode n = mapper.readTree(body == null ? "" : body);
+            String msg = n.path("message").asText("");
+            if (!msg.isBlank()) {
+                String details = n.path("errors").get(0).path("message").asText("");
+                return msg + (details.isBlank() ? "" : " — " + details);
+            }
+        } catch (Exception ignored) {
+        }
+        return fallback;
+    }
+
+    /** Create an issue in the repo. */
+    public IssueDto createIssue(String owner, String repo, String token, String title, String body) {
+        String json = String.format(
+                "{\"title\":%s,\"body\":%s}",
+                mapper.valueToTree(title), mapper.valueToTree(body));
+        return IssueDto.from(postJson("/repos/" + owner + "/" + repo + "/issues", token, json));
+    }
+
+    /** All branches of the repo (for the pull-request form's base/head pickers). */
+    public List<BranchDto> listBranches(String owner, String repo, String token) {
+        JsonNode root = getJson("/repos/" + owner + "/" + repo + "/branches?per_page=100", token);
+        List<BranchDto> branches = new ArrayList<>();
+        root.forEach(n -> branches.add(new BranchDto(n.path("name").asText())));
+        return branches;
+    }
+
+    /** Open a pull request from head into base. */
+    public PullDto createPull(String owner, String repo, String token,
+                              String title, String head, String base, String body, boolean draft) {
+        String json = String.format(
+                "{\"title\":%s,\"head\":%s,\"base\":%s,\"body\":%s,\"draft\":%b}",
+                mapper.valueToTree(title), mapper.valueToTree(head),
+                mapper.valueToTree(base), mapper.valueToTree(body), draft);
+        return PullDto.from(postJson("/repos/" + owner + "/" + repo + "/pulls", token, json));
     }
 
     /** Single issue by number. If the number belongs to a PR, its PR data is returned instead. */

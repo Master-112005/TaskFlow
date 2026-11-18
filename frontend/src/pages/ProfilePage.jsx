@@ -16,8 +16,9 @@ export default function ProfilePage() {
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
 
-  // linked GitHub accounts (admins only)
+  // linked GitHub / LinkedIn accounts (all users — normal users get 1 GitHub account, admins 3)
   const isAdmin = user?.userType === 'ADMIN'
+  const githubLimit = isAdmin ? 3 : 1
   const [accounts, setAccounts] = useState(null)
   const [accountsError, setAccountsError] = useState('')
   const [removingId, setRemovingId] = useState(null)
@@ -33,11 +34,11 @@ export default function ProfilePage() {
   const githubCount = accounts?.filter((a) => a.provider === 'GITHUB').length ?? 0
 
   useEffect(() => {
-    if (!isAdmin) return
     api.get('/github/accounts')
       .then((res) => setAccounts(res.data))
       .catch((err) => setAccountsError(errorMessage(err)))
-  }, [isAdmin])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Returning from the GitHub OAuth flow ("Add account")
   useEffect(() => {
@@ -46,11 +47,9 @@ export default function ProfilePage() {
     if (status === 'connected') {
       setGithubNote(`GitHub account ${login} linked successfully.`)
       refresh().catch(() => {})
-      if (isAdmin) {
-        api.get('/github/accounts')
-          .then((res) => setAccounts(res.data))
-          .catch(() => {})
-      }
+      api.get('/github/accounts')
+        .then((res) => setAccounts(res.data))
+        .catch(() => {})
       setSearchParams({}, { replace: true })
     } else if (status === 'already') {
       setGithubNote(
@@ -216,48 +215,51 @@ export default function ProfilePage() {
             </form>
           </div>
 
-          {/* right: linked accounts (admins only) */}
-          {isAdmin && (
-            <section className="admin-panel github-accounts">
-              <div className="panel-card-head">
-                <h2>Accounts</h2>
-                <button className="btn sm" onClick={() => { setChooseOpen(!chooseOpen); setLinkedinOpen(false) }} disabled={connecting}>
-                  {connecting ? 'Opening GitHub…' : 'Add account'}
-                </button>
-              </div>
-              <p className="hint">
-                {count === 0
-                  ? 'No account linked yet.'
-                  : `${count} account${count === 1 ? '' : 's'} linked to this profile.`}
-              </p>
+          {/* right: linked accounts (all users) */}
+          <section className="admin-panel github-accounts">
+            <div className="panel-card-head">
+              <h2>Accounts</h2>
+              <button className="btn sm" onClick={() => { setChooseOpen(!chooseOpen); setLinkedinOpen(false) }} disabled={connecting}>
+                {connecting ? 'Opening GitHub…' : 'Add account'}
+              </button>
+            </div>
+            <p className="hint">
+              {count === 0
+                ? 'No account linked yet.'
+                : `${count} account${count === 1 ? '' : 's'} linked to this profile.`}
+            </p>
 
-              {/* chooser: GitHub via OAuth, LinkedIn via pasted profile link */}
-              {chooseOpen && (
-                <div className="account-chooser">
-                  <button
-                    className="btn account-btn"
-                    onClick={addAccount}
-                    disabled={connecting || githubCount >= 3}
-                    title={githubCount >= 3 ? 'GitHub limit reached (3) — remove one first' : 'Connect with GitHub OAuth'}
-                  >
-                    <strong>GitHub</strong>
-                    <small>
-                      {githubCount >= 3
+            {/* chooser: GitHub via OAuth, LinkedIn via pasted profile link */}
+            {chooseOpen && (
+              <div className="account-chooser">
+                <button
+                  className="btn account-btn"
+                  onClick={addAccount}
+                  disabled={connecting || githubCount >= githubLimit}
+                  title={githubCount >= githubLimit ? 'GitHub limit reached — remove your account first' : 'Connect with GitHub OAuth'}
+                >
+                  <strong>GitHub</strong>
+                  <small>
+                    {githubCount >= githubLimit
+                      ? isAdmin
                         ? 'Limit reached — up to 3 GitHub accounts. Remove one first.'
+                        : 'Limit reached — normal users link one GitHub account. Remove it first.'
                         : githubCount > 0
                           ? 'GitHub shows the account picker — pick the account to add, no logout needed'
-                          : 'Connect with one click (OAuth)'}
-                    </small>
-                  </button>
-                  <button
-                    className="btn account-btn"
-                    onClick={() => setLinkedinOpen(!linkedinOpen)}
-                  >
-                    <strong>LinkedIn</strong>
-                    <small>Paste your LinkedIn profile link</small>
-                  </button>
-                </div>
-              )}
+                          : isAdmin
+                            ? 'Connect with one click (OAuth)'
+                            : 'Issues and pull requests you create will be made as this account'}
+                  </small>
+                </button>
+                <button
+                  className="btn account-btn"
+                  onClick={() => setLinkedinOpen(!linkedinOpen)}
+                >
+                  <strong>LinkedIn</strong>
+                  <small>Paste your LinkedIn profile link</small>
+                </button>
+              </div>
+            )}
 
               {/* LinkedIn: paste the profile link */}
               {linkedinOpen && (
@@ -313,8 +315,7 @@ export default function ProfilePage() {
 
               {githubNote && <div className="github-note">{githubNote}</div>}
               {accountsError && <div className="form-error">{accountsError}</div>}
-            </section>
-          )}
+          </section>
         </div>
       </main>
     </div>

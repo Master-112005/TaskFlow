@@ -33,6 +33,24 @@ public class GitHubDtos {
         }
     }
 
+    /** Request body for creating a new issue. */
+    public record CreateIssueRequest(@jakarta.validation.constraints.NotBlank String title, String body) {
+    }
+
+    /** Request body for opening a pull request. */
+    public record CreatePullRequest(
+            @jakarta.validation.constraints.NotBlank String title,
+            @jakarta.validation.constraints.NotBlank String head,
+            @jakarta.validation.constraints.NotBlank String base,
+            String body,
+            /** Boolean (not primitive) so an omitted "draft" can't fail JSON deserialization. */
+            Boolean draft) {
+    }
+
+    /** A branch of the project's repo (base/head pickers in the pull-request form). */
+    public record BranchDto(String name) {
+    }
+
     public record IssueDto(long number, String title, String state, String author,
                            String createdAt, String updatedAt, String htmlUrl, String body,
                            int comments, List<String> labels) {
