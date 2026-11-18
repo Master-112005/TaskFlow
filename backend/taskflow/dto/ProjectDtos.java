@@ -9,7 +9,16 @@ import java.time.format.DateTimeFormatter;
 
 public class ProjectDtos {
 
-    public record CreateProjectRequest(
+    /** Repo owner/name are optional: a project can be created without GitHub
+     *  and the team lead attaches a repository later. */
+    public record CreateProjectRequest(String repoOwner, String repoName, String name, Long accountId) {
+        public boolean hasRepo() {
+            return repoOwner != null && !repoOwner.isBlank() && repoName != null && !repoName.isBlank();
+        }
+    }
+
+    /** A repository attached to a project later (lead flow) — or the create request without one. */
+    public record AttachRepoRequest(
             @NotBlank String repoOwner,
             @NotBlank String repoName,
             Long accountId) {

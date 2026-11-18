@@ -108,18 +108,20 @@ public class GitHubService {
     }
 
     /**
-     * POST to the GitHub API. GitHub's own validation errors (422) are surfaced
+     * POST/PUT/PATCH to the GitHub API. GitHub's own validation errors (422) are surfaced
      * with their message so the user sees why e.g. a pull request was rejected
      * ("No commits between base and head"), never as HTTP 401.
      */
-    private JsonNode postJson(String path, String token, String json) {
+    private JsonNode requestJson(String method, String path, String token, String json) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(API + path))
                 .timeout(Duration.ofSeconds(30))
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "TaskFlow")
                 .header("X-GitHub-Api-Version", "2022-11-28")
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(json));
+                .method(method, json == null
+                        ? HttpRequest.BodyPublishers.noBody()
+                        : HttpRequest.BodyPublishers.ofString(json));
         if (token != null && !token.isBlank()) {
             builder.header("Authorization", "Bearer " + token.trim());
         }
@@ -143,6 +145,10 @@ public class GitHubService {
             if (status >= 300) {
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "GitHub API returned status " + status);
             }
+            if (response.body() == null || response.body().isBlank()) {
+                // 204 No Content (e.g. accepted invitation, already a collaborator)
+                return null;
+            }
             return mapper.readTree(response.body());
         } catch (IOException e) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Could not reach GitHub: " + e.getMessage());
@@ -150,6 +156,10 @@ public class GitHubService {
             Thread.currentThread().interrupt();
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Request to GitHub was interrupted");
         }
+    }
+
+    private JsonNode postJson(String path, String token, String json) {
+        return requestJson("POST", path, token, json);
     }
 
     /** Pulls the human-readable message out of a GitHub error response body. */
@@ -190,6 +200,42 @@ public class GitHubService {
                 mapper.valueToTree(title), mapper.valueToTree(head),
                 mapper.valueToTree(base), mapper.valueToTree(body), draft);
         return PullDto.from(postJson("/repos/" + owner + "/" + repo + "/pulls", token, json));
+    }
+
+    /**
+     * Invite a GitHub user as a collaborator (push permission) on the repo.
+     * This is how approved project members get write access to a PRIVATE repo:
+     * the repo owner's token sends the invite, the member's own token accepts it.
+     *
+     * @return true when a new invitation was created; false when the user
+     *         already is a collaborator (HTTP 204)
+     */
+    public boolean inviteCollaborator(String owner, String repo, String token, String githubLogin) {
+        JsonNode result = requestJson("PUT",
+                "/repos/" + owner + "/" + repo + "/collaborators/" + githubLogin,
+                token, "{\"permission\":\"push\"}");
+        // 201 = invitation created, 204 = already a collaborator
+        return result != null && result.hasNonNull("id");
+    }
+
+    /**
+     * Accepts a pending repository invitation with the MEMBER's own token
+     * (invitations can only be accepted by the invited user).
+     *
+     * @return true when an invitation for this repo was found and accepted
+     */
+    public boolean acceptRepoInvitation(String token, String owner, String repo) {
+        JsonNode root = getJson("/user/repository_invitations?per_page=100", token);
+        for (JsonNode inv : root) {
+            JsonNode r = inv.path("repository");
+            boolean matches = owner.equalsIgnoreCase(r.path("owner").path("login").asText())
+                    && repo.equalsIgnoreCase(r.path("name").asText());
+            if (matches) {
+                requestJson("PATCH", "/user/repository_invitations/" + inv.path("id").asLong(), token, null);
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Single issue by number. If the number belongs to a PR, its PR data is returned instead. */

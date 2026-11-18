@@ -6,6 +6,7 @@ import taskflow.dto.GitHubDtos.CreatePullRequest;
 import taskflow.dto.GitHubDtos.IssueDto;
 import taskflow.dto.GitHubDtos.PullDto;
 import taskflow.dto.GitHubDtos.RepoDto;
+import taskflow.dto.ProjectDtos.AttachRepoRequest;
 import taskflow.dto.ProjectDtos.CreateProjectRequest;
 import taskflow.dto.ProjectDtos.JoinRequest;
 import taskflow.dto.ProjectDtos.JoinRequestDto;
@@ -94,22 +95,35 @@ public class ProjectController {
         return account.getToken();
     }
 
-    /** Admin/lead/manager: select a GitHub repo -> project is created and an invite code is generated. */
+    /**
+     * Creates a project. GitHub is completely optional: with a repo the project
+     * is validated against GitHub and stores that account's token; without one
+     * the project starts repo-less and the team lead attaches a repository
+     * later from the project page. The invite code exists from creation either
+     * way (the team lead needs it to request joining).
+     */
     @PostMapping
     public ProjectDto create(@Valid @RequestBody CreateProjectRequest request, Authentication auth) {
         User user = access.requireUser(auth);
         access.requireAdmin(user);
 
-        // The project is tied to the account whose repo was picked — not
-        // necessarily the user's active account.
-        String token = resolveToken(user, request.accountId());
-        RepoDto repo = gitHub.getRepo(request.repoOwner().trim(), request.repoName().trim(), token);
-
         Project project = new Project();
-        project.setName(repo.name());
-        project.setRepoOwner(repo.owner());
-        project.setRepoName(repo.name());
-        project.setGithubToken(token);
+        if (request.hasRepo()) {
+            // The project is tied to the account whose repo was picked — not
+            // necessarily the user's active account.
+            String token = resolveToken(user, request.accountId());
+            RepoDto repo = gitHub.getRepo(request.repoOwner().trim(), request.repoName().trim(), token);
+            project.setName(repo.name());
+            project.setRepoOwner(repo.owner());
+            project.setRepoName(repo.name());
+            project.setGithubToken(token);
+        } else {
+            if (request.name() == null || request.name().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Give the project a name (or pick a GitHub repository — its name is used)");
+            }
+            project.setName(request.name().trim());
+        }
         project.setInviteCode(generateUniqueCode());
         project.setCreatedBy(user);
         projects.save(project);
@@ -117,6 +131,63 @@ public class ProjectController {
         // creator is implicitly a member
         joinProject(project, user);
         return ProjectDto.from(project, 1);
+    }
+
+    /**
+     * The team lead (or another approver) attaches the GitHub repository after
+     * connecting their account on the project page. Stores owner/name and the
+     * chosen account's token, and the project continues as usual.
+     */
+    @PostMapping("/{id}/repo")
+    public ProjectDto attachRepo(@PathVariable long id, @Valid @RequestBody AttachRepoRequest request,
+                                 Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        if (!canManage(user, project)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Only this project's creator or leads can connect the repository");
+        }
+        String token = resolveToken(user, request.accountId());
+        RepoDto repo = gitHub.getRepo(request.repoOwner().trim(), request.repoName().trim(), token);
+        project.setRepoOwner(repo.owner());
+        project.setRepoName(repo.name());
+        project.setGithubToken(token);
+        projects.save(project);
+        return ProjectDto.from(project, members.findByProject(project).size());
+    }
+
+    /** Projects the current user CREATED (admin profile "Projects" panel). */
+    @GetMapping("/created")
+    public List<ProjectDto> created(Authentication auth) {
+        User user = access.requireUser(auth);
+        access.requireAdmin(user);
+        return projects.findByCreatedByOrderByCreatedAtDesc(user).stream()
+                .map(p -> ProjectDto.from(p, members.findByProject(p).size()))
+                .toList();
+    }
+
+    /**
+     * Deletes a project (its creator only, from the profile "Projects" panel).
+     * Removes the project, its members and its join requests. This does NOT
+     * touch the GitHub repository itself — only the TaskFlow project.
+     */
+    @DeleteMapping("/{id}")
+    public void deleteProject(@PathVariable long id, Authentication auth) {
+        User user = access.requireUser(auth);
+        access.requireAdmin(user);
+        Project project = projects.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found"));
+        if (!project.getCreatedBy().getId().equals(user.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only the project creator can delete it");
+        }
+        List<ProjectMember> projectMembers = members.findByProject(project);
+        members.deleteAll(projectMembers);
+        for (JoinStatus status : JoinStatus.values()) {
+            List<taskflow.model.JoinRequest> reqs =
+                    joinRequests.findByProjectAndStatusOrderByRequestedAtAsc(project, status);
+            joinRequests.deleteAll(reqs);
+        }
+        projects.delete(project);
     }
 
     /** Projects the current user created (admins) or joined via code (everyone). */
@@ -149,6 +220,14 @@ public class ProjectController {
         User user = access.requireUser(auth);
         Project project = projects.findByInviteCodeIgnoreCase(request.code().trim())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Invalid code — no project found"));
+
+        // Normal users must have connected their own GitHub account before they
+        // can ask to enter a project — issues/PRs they create should be made
+        // under their account. Team leads connect GitHub later on the project page.
+        if (user.getUserType() == taskflow.model.UserType.NORMAL && !hasGithubToken(user)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Connect your GitHub account first (Profile → Accounts) before entering a project");
+        }
 
         if (members.existsByProjectAndUser(project, user)) {
             return JoinResponse.joined(ProjectDto.from(project, members.findByProject(project).size()));
@@ -218,6 +297,43 @@ public class ProjectController {
         joinRequests.save(jr);
         if (decision == JoinStatus.ACCEPTED) {
             joinProject(jr.getProject(), jr.getUser());
+            // the approved member also gets write access to the (possibly
+            // private) GitHub repository, using their own GitHub account
+            grantRepoAccess(jr.getProject(), jr.getUser());
+        }
+    }
+
+    /**
+     * Gives an approved member's own GitHub account push access to the
+     * project's repository (private repos included): the project's stored
+     * token invites them as a collaborator, and their own token accepts the
+     * invitation — so issues and pull requests they create are attributed to
+     * THEIR account. GitHub problems must never break the approval itself,
+     * so any failure here is silently ignored (the member still has project
+     * access, and issue/PR creation falls back to the project token).
+     */
+    private void grantRepoAccess(Project project, User member) {
+        try {
+            if (!hasText(project.getGithubToken())) {
+                return;
+            }
+            // the member's GitHub login: prefer their ACTIVE account, else the newest linked one
+            List<LinkedGithubAccount> githubAccounts = linkedAccounts.findByUserOrderByConnectedAtAsc(member).stream()
+                    .filter(a -> LinkedGithubAccount.GITHUB.equals(a.getProvider()))
+                    .filter(a -> hasText(a.getToken()))
+                    .toList();
+            LinkedGithubAccount gh = githubAccounts.stream()
+                    .filter(a -> a.getToken().equals(member.getGithubToken()))
+                    .findFirst()
+                    .orElse(githubAccounts.isEmpty() ? null : githubAccounts.get(githubAccounts.size() - 1));
+            if (gh == null) {
+                return; // no linked GitHub account — nothing to attribute issues to
+            }
+            gitHub.inviteCollaborator(project.getRepoOwner(), project.getRepoName(),
+                    project.getGithubToken(), gh.getUsername());
+            gitHub.acceptRepoInvitation(gh.getToken(), project.getRepoOwner(), project.getRepoName());
+        } catch (Exception ignored) {
+            // never block the approval on GitHub problems
         }
     }
 
@@ -371,6 +487,16 @@ public class ProjectController {
 
     private boolean hasText(String s) {
         return s != null && !s.isBlank();
+    }
+
+    /** The user counts as GitHub-connected when any linked GitHub account has a token. */
+    private boolean hasGithubToken(User user) {
+        if (hasText(user.getGithubToken())) {
+            return true;
+        }
+        return linkedAccounts.findByUserOrderByConnectedAtAsc(user).stream()
+                .anyMatch(a -> (a.getProvider() == null || LinkedGithubAccount.GITHUB.equals(a.getProvider()))
+                        && hasText(a.getToken()));
     }
 
     @GetMapping("/{id}/pulls")

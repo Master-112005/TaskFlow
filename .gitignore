@@ -1,3 +1,13 @@
-.mvn/
-node_modules/
-target/
+# build artifacts
+frontend/node_modules/
+frontend/dist/
+backend/target/
+
+# local secrets (never commit real passwords/tokens)
+backend/local-secrets.properties
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store

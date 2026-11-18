@@ -5,6 +5,19 @@ import { useAuth } from '../AuthContext'
 import ProfileMenu from '../components/ProfileMenu'
 import { UserAvatar } from '../components/Avatar'
 
+/** Small trash-can SVG for the project delete button. */
+function DustbinIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    </svg>
+  )
+}
+
 export default function ProfilePage() {
   const { user, refresh } = useAuth()
   const navigate = useNavigate()
@@ -31,6 +44,16 @@ export default function ProfilePage() {
   // message shown after returning from the GitHub OAuth flow
   const [githubNote, setGithubNote] = useState(null)
 
+  // two-step removal: click × -> warning with OK -> OK arms -> click × again to remove
+  const [warnAccount, setWarnAccount] = useState(null)
+  const [armedAccountId, setArmedAccountId] = useState(null)
+
+  // projects created by this admin (profile "Projects" panel)
+  const [projects, setProjects] = useState([])
+  const [warnProject, setWarnProject] = useState(null)
+  const [armedProjectId, setArmedProjectId] = useState(null)
+  const [deletingProjectId, setDeletingProjectId] = useState(null)
+
   const githubCount = accounts?.filter((a) => a.provider === 'GITHUB').length ?? 0
 
   useEffect(() => {
@@ -39,6 +62,15 @@ export default function ProfilePage() {
       .catch((err) => setAccountsError(errorMessage(err)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Projects this admin created (profile "Projects" panel)
+  useEffect(() => {
+    if (!isAdmin) return
+    api.get('/projects/created')
+      .then((res) => setProjects(res.data))
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin])
 
   // Returning from the GitHub OAuth flow ("Add account")
   useEffect(() => {
@@ -51,6 +83,10 @@ export default function ProfilePage() {
         .then((res) => setAccounts(res.data))
         .catch(() => {})
       setSearchParams({}, { replace: true })
+      // A normal user who just connected (first-login flow) continues home.
+      if (user?.userType === 'NORMAL') {
+        navigate('/home', { replace: true })
+      }
     } else if (status === 'already') {
       setGithubNote(
         <span>
@@ -61,6 +97,15 @@ export default function ProfilePage() {
       setSearchParams({}, { replace: true })
     } else if (status === 'error') {
       setAccountsError('GitHub connection failed or was cancelled. Please try again.')
+      setSearchParams({}, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // First sign-in for a normal user: GitHub must be connected before projects.
+  useEffect(() => {
+    if (searchParams.get('connect') === 'first') {
+      setChooseOpen(true)
       setSearchParams({}, { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -144,6 +189,55 @@ export default function ProfilePage() {
     }
   }
 
+  // Two-step removal of a linked account: click × -> warning with OK ->
+  // OK arms the row -> click × again to actually remove. Every time.
+  function requestRemoveAccount(account) {
+    if (armedAccountId === account.id) {
+      setArmedAccountId(null)
+      setWarnAccount(null)
+      removeAccount(account)
+    } else {
+      setWarnAccount(account)
+      setArmedAccountId(null)
+    }
+  }
+
+  function confirmRemoveAccount() {
+    setArmedAccountId(warnAccount?.id || null)
+    setWarnAccount(null)
+  }
+
+  async function deleteProject(project) {
+    setDeletingProjectId(project.id)
+    setAccountsError('')
+    try {
+      await api.delete(`/projects/${project.id}`)
+      setProjects((prev) => prev.filter((p) => p.id !== project.id))
+      setArmedProjectId(null)
+      setWarnProject(null)
+    } catch (err) {
+      setAccountsError(errorMessage(err))
+    } finally {
+      setDeletingProjectId(null)
+    }
+  }
+
+  // Two-step project delete: dustbin -> warning with OK -> OK arms ->
+  // dustbin again -> deleted. Every time.
+  function requestDeleteProject(project) {
+    if (armedProjectId === project.id) {
+      deleteProject(project)
+    } else {
+      setWarnProject(project)
+      setArmedProjectId(null)
+    }
+  }
+
+  function confirmDeleteProject() {
+    setArmedProjectId(warnProject?.id || null)
+    setWarnProject(null)
+  }
+
   const count = accounts?.length ?? 0
   return (
     <div className="home-page">
@@ -156,6 +250,12 @@ export default function ProfilePage() {
       </header>
 
       <main className="profile-wrap">
+        {user?.userType === 'NORMAL' && !user?.githubConnected && (
+          <div className="first-connect-note">
+            Connect your GitHub account below to continue — issues and pull requests you create
+            will be made under your own GitHub account. You can enter projects once it is connected.
+          </div>
+        )}
         <div className="profile-grid">
           {/* left: profile */}
           <div className="profile-card">
@@ -173,7 +273,6 @@ export default function ProfilePage() {
                 <div className="profile-side-since">Member since {formatWhen(user.createdAt)}</div>
               )}
             </aside>
-
             <form className="profile-form" onSubmit={submit}>
               <h3 className="team-heading">Account details</h3>
               <label>Name</label>
@@ -304,18 +403,80 @@ export default function ProfilePage() {
                   </div>
                   <button
                     className="member-remove"
-                    title={`Remove ${a.provider === 'LINKEDIN' ? 'this LinkedIn profile' : a.username}`}
+                    title={
+                      armedAccountId === a.id
+                        ? `Click again to remove ${a.provider === 'LINKEDIN' ? 'this LinkedIn profile' : a.username}`
+                        : `Remove ${a.provider === 'LINKEDIN' ? 'this LinkedIn profile' : a.username}`
+                    }
                     disabled={removingId === a.id}
-                    onClick={() => removeAccount(a)}
+                    onClick={() => requestRemoveAccount(a)}
                   >
                     ×
                   </button>
                 </div>
               ))}
 
+              {warnAccount && (
+                <div className="warn-note">
+                  <span>
+                    Remove {warnAccount.provider === 'LINKEDIN'
+                      ? 'this LinkedIn profile'
+                      : `the GitHub account ${warnAccount.username}`}
+                    ? Issues and pull requests you made with it will fall back to the project's
+                    account. Press OK, then press × again to remove.
+                  </span>
+                  <button className="btn sm warn-ok" onClick={confirmRemoveAccount}>OK</button>
+                </div>
+              )}
+
               {githubNote && <div className="github-note">{githubNote}</div>}
               {accountsError && <div className="form-error">{accountsError}</div>}
           </section>
+
+          {/* below accounts: projects this admin created, with delete (dustbin) */}
+          {isAdmin && (
+            <section className="admin-panel github-accounts profile-projects">
+              <div className="panel-card-head">
+                <h2>Projects</h2>
+              </div>
+              <p className="hint">
+                {projects.length === 0
+                  ? 'No projects created yet.'
+                  : `${projects.length} project${projects.length === 1 ? '' : 's'} created by you.`}
+              </p>
+
+              {warnProject && (
+                <div className="warn-note">
+                  <span>
+                    Delete the project <strong>{warnProject.name}</strong>? Its members and join
+                    requests are removed with it — the GitHub repository itself is not touched.
+                    Press OK, then click the bin again to delete.
+                  </span>
+                  <button className="btn sm warn-ok" onClick={confirmDeleteProject}>OK</button>
+                </div>
+              )}
+
+              {projects.map((p) => (
+                <div key={p.id} className="profile-project-row">
+                  <div className="linked-info">
+                    <strong>{p.name}</strong>
+                    <small>
+                      {p.repoOwner ? `${p.repoOwner}/${p.repoName}` : 'No repository connected yet'}
+                      {` · ${p.memberCount} member${p.memberCount === 1 ? '' : 's'}`}
+                    </small>
+                  </div>
+                  <button
+                    className={`dustbin-btn ${armedProjectId === p.id ? 'armed' : ''}`}
+                    title={armedProjectId === p.id ? `Click again to delete ${p.name}` : `Delete ${p.name}`}
+                    disabled={deletingProjectId === p.id}
+                    onClick={() => requestDeleteProject(p)}
+                  >
+                    <DustbinIcon />
+                  </button>
+                </div>
+              ))}
+            </section>
+          )}
         </div>
       </main>
     </div>

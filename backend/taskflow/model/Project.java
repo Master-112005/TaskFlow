@@ -14,15 +14,16 @@ public class Project {
     @Column(nullable = false)
     private String name;
 
-    @Column(name = "repo_owner", nullable = false)
+    /** Repo-less projects are allowed: the team lead connects GitHub later. */
+    @Column(name = "repo_owner")
     private String repoOwner;
 
-    @Column(name = "repo_name", nullable = false)
+    @Column(name = "repo_name")
     private String repoName;
 
-    /** GitHub PAT of the admin who created the project (used to fetch issues/PRs). */
+    /** GitHub token used to fetch issues/PRs (null until a repo is attached). */
     @Lob
-    @Column(name = "github_token", nullable = false)
+    @Column(name = "github_token")
     private String githubToken;
 
     @Column(name = "invite_code", nullable = false, unique = true)

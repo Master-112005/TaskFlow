@@ -11,6 +11,9 @@ export default function TeamPanel({ project, onOpenChat }) {
   const [members, setMembers] = useState([])
   const [removingId, setRemovingId] = useState(null)
   const [error, setError] = useState('')
+  // two-step removal: click × -> warning with OK -> OK arms -> click × again
+  const [warnMember, setWarnMember] = useState(null)
+  const [armedMemberId, setArmedMemberId] = useState(null)
 
   useEffect(() => {
     api.get(`/projects/${project.id}/members`)
@@ -20,13 +23,26 @@ export default function TeamPanel({ project, onOpenChat }) {
 
   const isAdmin = user?.userType === 'ADMIN'
 
-  // Remove a teammate — always ask for confirmation first (the creator is
-  // protected by the backend and has no remove button here anyway).
+  // Remove a teammate — always asks for the warning + OK + a second click
+  // first (the creator is protected by the backend and has no remove button
+  // here anyway).
+  function requestRemoveMember(m) {
+    if (armedMemberId === m.id) {
+      setArmedMemberId(null)
+      setWarnMember(null)
+      removeMember(m)
+    } else {
+      setWarnMember(m)
+      setArmedMemberId(null)
+    }
+  }
+
+  function confirmRemoveMember() {
+    setArmedMemberId(warnMember?.id || null)
+    setWarnMember(null)
+  }
+
   async function removeMember(m) {
-    const confirmed = window.confirm(
-      `Remove ${m.name} from this project?\n\nThey will lose access to this project's chat and details.`
-    )
-    if (!confirmed) return
     setRemovingId(m.id)
     setError('')
     try {
@@ -71,6 +87,15 @@ export default function TeamPanel({ project, onOpenChat }) {
         {/* team details, grouped by role */}
         <section className="team-section">
           <h3 className="team-heading">Team · {members.length}</h3>
+          {warnMember && (
+            <div className="warn-note">
+              <span>
+                Remove <strong>{warnMember.name}</strong> from this project? They will lose access
+                to this project's chat and details. Press OK, then press × again to remove.
+              </span>
+              <button className="btn sm warn-ok" onClick={confirmRemoveMember}>OK</button>
+            </div>
+          )}
           {groups.map((g) => (
             <div key={g.role} className="role-group">
               <div className="role-group-head">
@@ -97,10 +122,14 @@ export default function TeamPanel({ project, onOpenChat }) {
                     )}
                     {isAdmin && m.id !== project.createdById && (
                       <button
-                        className="member-remove"
-                        title={`Remove ${m.name} from this project`}
+                        className={`member-remove ${armedMemberId === m.id ? 'armed' : ''}`}
+                        title={
+                          armedMemberId === m.id
+                            ? `Click again to remove ${m.name}`
+                            : `Remove ${m.name} from this project`
+                        }
                         disabled={removingId === m.id}
-                        onClick={() => removeMember(m)}
+                        onClick={() => requestRemoveMember(m)}
                       >
                         ×
                       </button>

@@ -93,6 +93,20 @@ export default function GitHubPanel({ mode, project, onClose }) {
 
   const sortedBranches = branches ? [...branches].sort((a, b) => a.name.localeCompare(b.name)) : []
 
+  // The GitHub connection behind this panel is dead (expired / revoked):
+  // offer the reconnect right here instead of sending the user to the profile.
+  const connectionDead = error.includes('connect it again')
+
+  async function reconnectGitHub() {
+    setError('')
+    try {
+      const { data } = await api.get('/github/connect-url', { params: { returnTo: `/project/${project.id}` } })
+      window.location.href = data.url
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
   return (
     <aside className={`side-panel ${mode}`}>
       <div className="panel-head">
@@ -112,8 +126,14 @@ export default function GitHubPanel({ mode, project, onClose }) {
         </div>
       </div>
       <div className="panel-sub">
-        {project.repoOwner}/{project.repoName}
+        {project.repoOwner ? `${project.repoOwner}/${project.repoName}` : ''}
       </div>
+      {connectionDead && (
+        <div className="reconnect-note">
+          <span>{error}</span>
+          <button className="btn primary sm" onClick={reconnectGitHub}>Reconnect GitHub</button>
+        </div>
+      )}
       {creating && (
         <form className="panel-form" onSubmit={submitCreate}>
           {isIssues ? (

@@ -18,6 +18,9 @@ export default function AdminHomePage() {
   const [repoDialogOpen, setRepoDialogOpen] = useState(false)
   const [accounts, setAccounts] = useState(null) // linked GitHub accounts
   const [accountId, setAccountId] = useState(null) // account whose repos are shown
+  // creating without GitHub: only a name -> lead attaches the repo later
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualName, setManualName] = useState('')
 
   const connected = !!user?.githubConnected
 
@@ -32,6 +35,8 @@ export default function AdminHomePage() {
   // LinkedIn accounts are for the profile only — they cannot serve repositories.
   async function openRepoDialog() {
     setRepoDialogOpen(true)
+    setManualOpen(false)
+    setManualName('')
     setError('')
     setAccounts(null)
     setAccountId(null)
@@ -45,7 +50,7 @@ export default function AdminHomePage() {
         setAccountId(githubAccounts[0].id)
         loadRepos(githubAccounts[0].id)
       } else if (githubAccounts.length === 0) {
-        setError('No GitHub account is linked. Connect GitHub from your profile first.')
+        setError('No GitHub account is linked. Connect GitHub from your profile first, or create the project without GitHub below.')
       }
     } catch (err) {
       setError(errorMessage(err))
@@ -126,6 +131,28 @@ export default function AdminHomePage() {
     }
   }
 
+  // Create a project with just a name — GitHub is completely optional and the
+  // team lead connects the repository later from the project page.
+  async function createManualProject(e) {
+    e.preventDefault()
+    if (!manualName.trim() || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const { data } = await api.post('/projects', { name: manualName.trim() })
+      setCreated(data)
+      const refreshed = await api.get('/projects/my')
+      setProjects(refreshed.data)
+      setManualName('')
+      setManualOpen(false)
+      setRepoDialogOpen(false)
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function copyCode(code) {
     try {
       await navigator.clipboard.writeText(code)
@@ -149,11 +176,9 @@ export default function AdminHomePage() {
           >TaskFlow</span>
         </div>
         <div className="top-right">
-          {connected && (
-            <button className="btn sm" onClick={openRepoDialog}>
-              New project
-            </button>
-          )}
+          <button className="btn sm" onClick={openRepoDialog}>
+            New project
+          </button>
           {(user?.role === 'MANAGER' || user?.role === 'ADMIN') && (
             <button className="btn sm" onClick={() => navigate('/team')}>
               Team panel
@@ -168,7 +193,7 @@ export default function AdminHomePage() {
         {error && <div className="form-error">{error}</div>}
         {!connected && (
           <>
-            <p className="home-sub">Connect GitHub, pick a project, share the generated code with your team</p>
+            <p className="home-sub">Connect GitHub to link a repository — or create a project without one and let your team lead connect it later</p>
             <section className="admin-panel">
               <h2>Connect GitHub</h2>
               <p>Connect your GitHub account with one click — no tokens to copy or paste.</p>
@@ -185,50 +210,95 @@ export default function AdminHomePage() {
             <div className="repo-modal">
               <div className="modal-head">
                 <h2>
-                  {accountId === null && accounts && accounts.length > 1
-                    ? 'Choose a GitHub account'
-                    : `Pick the project${repos ? ` (${repos.length} repositories)` : ''}`}
+                  {manualOpen
+                    ? 'New project without GitHub'
+                    : accountId === null && accounts && accounts.length > 1
+                      ? 'Choose a GitHub account'
+                      : `Pick the project${repos ? ` (${repos.length} repositories)` : ''}`}
                 </h2>
                 <button className="btn ghost" onClick={() => setRepoDialogOpen(false)}>Close</button>
               </div>
 
-              {/* step 1: several accounts linked -> pick one */}
-              {accountId === null && accounts !== null && accounts.length > 1 && (
-                <div className="account-choice">
-                  {accounts.map((a) => (
-                    <button key={a.id} className="btn account-btn" onClick={() => chooseAccount(a.id)}>
-                      <strong>{a.username}</strong>
-                      <small>{a.active ? 'Active account' : 'Linked account'}</small>
+              {manualOpen ? (
+                /* without-GitHub path: only a project name */
+                <form className="manual-project-form" onSubmit={createManualProject}>
+                  <p className="hint">
+                    GitHub is optional. The project starts without a repository — the team lead connects
+                    GitHub and picks the repository from the project page after joining.
+                  </p>
+                  <label className="field-label" htmlFor="manual-name">Project name</label>
+                  <input
+                    id="manual-name"
+                    type="text"
+                    value={manualName}
+                    onChange={(e) => setManualName(e.target.value)}
+                    placeholder="e.g. Payment service rewrite"
+                    autoFocus
+                  />
+                  <div className="manual-actions">
+                    <button type="button" className="btn ghost" onClick={() => setManualOpen(false)}>
+                      Back
                     </button>
-                  ))}
-                </div>
-              )}
-
-              {/* step 2: repositories of the chosen (or only) account */}
-              {accountId !== null && (
-                <>
-                  <div className="repo-list">
-                    {repos === null && <div className="panel-loading">Loading repositories…</div>}
-                    {repos && repos.length === 0 && <div className="panel-empty">No repositories found on this account.</div>}
-                    {repos && repos.map((r) => (
-                      <label key={r.fullName} className={`repo-item ${selected === r.fullName ? 'selected' : ''}`}>
-                        <input
-                          type="radio"
-                          name="repo"
-                          value={r.fullName}
-                          checked={selected === r.fullName}
-                          onChange={() => setSelected(r.fullName)}
-                        />
-                        <div className="repo-info">
-                          <strong>{r.fullName}</strong>
-                          <small>{r.isPrivate ? 'private' : 'public'}{r.description ? ` · ${r.description}` : ''}</small>
-                        </div>
-                      </label>
-                    ))}
+                    <button
+                      type="submit"
+                      className="btn primary"
+                      disabled={!manualName.trim() || busy}
+                    >
+                      {busy ? 'Creating…' : 'Create project & generate code'}
+                    </button>
                   </div>
-                  <button className="btn primary" onClick={createProject} disabled={!selected || busy}>
-                    {busy ? 'Creating…' : 'Create project & generate code'}
-                  </button>
+                </form>
+              ) : (
+                <>
+                  {/* step 1: several accounts linked -> pick one */}
+                  {accountId === null && accounts !== null && accounts.length > 1 && (
+                    <div className="account-choice">
+                      {accounts.map((a) => (
+                        <button key={a.id} className="btn account-btn" onClick={() => chooseAccount(a.id)}>
+                          <strong>{a.username}</strong>
+                          <small>{a.active ? 'Active account' : 'Linked account'}</small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* step 2: repositories of the chosen (or only) account */}
+                  {accountId !== null && (
+                    <>
+                      <div className="repo-list">
+                        {repos === null && <div className="panel-loading">Loading repositories…</div>}
+                        {repos && repos.length === 0 && <div className="panel-empty">No repositories found on this account.</div>}
+                        {repos && repos.map((r) => (
+                          <label key={r.fullName} className={`repo-item ${selected === r.fullName ? 'selected' : ''}`}>
+                            <input
+                              type="radio"
+                              name="repo"
+                              value={r.fullName}
+                              checked={selected === r.fullName}
+                              onChange={() => setSelected(r.fullName)}
+                            />
+                            <div className="repo-info">
+                              <strong>{r.fullName}</strong>
+                              <small>{r.isPrivate ? 'private' : 'public'}{r.description ? ` · ${r.description}` : ''}</small>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                      <button className="btn primary" onClick={createProject} disabled={!selected || busy}>
+                        {busy ? 'Creating…' : 'Create project & generate code'}
+                      </button>
+                    </>
+                  )}
+
+                  {/* GitHub is optional: a name-only project, lead attaches the repo later */}
+                  <div className="manual-option">
+                    <button
+                      className="btn ghost"
+                      onClick={() => { setManualOpen(true); setError('') }}
+                    >
+                      Create without GitHub
+                    </button>
+                  </div>
                 </>
               )}
 
@@ -247,6 +317,9 @@ export default function AdminHomePage() {
                 {copied ? 'Copied!' : 'Copy'}
               </button>
             </div>
+            {!created.repoOwner && (
+              <p className="hint">No repository connected yet — the team lead connects GitHub and picks the repository from the project page.</p>
+            )}
             <button className="btn primary" onClick={() => navigate(`/project/${created.id}`)}>
               Open project
             </button>
@@ -261,7 +334,7 @@ export default function AdminHomePage() {
                 <div key={p.id} className="project-row">
                   <div className="project-cell main">
                     <strong>{p.name}</strong>
-                    <small>{p.repoOwner}/{p.repoName}</small>
+                    <small>{p.repoOwner ? `${p.repoOwner}/${p.repoName}` : 'No repository connected yet'}</small>
                   </div>
                   <div className="project-cell">
                     <small>{p.memberCount} member(s)</small>

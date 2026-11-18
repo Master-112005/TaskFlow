@@ -48,7 +48,7 @@ export default function JoinRequestsPanel({ project, onClose }) {
         <button className="btn ghost" onClick={onClose} title="Close">Close</button>
       </div>
       <div className="panel-sub">
-        {project.repoOwner}/{project.repoName}
+        {project.repoOwner ? `${project.repoOwner}/${project.repoName}` : 'No repository connected yet'}
       </div>
       <div className="panel-body">
         {items === null && <div className="panel-loading">Loading…</div>}

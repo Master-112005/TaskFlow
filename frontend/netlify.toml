@@ -1,0 +1,18 @@
+# Netlify config: proxies /api to the Render backend and serves the SPA.
+# Replace taskflow-backend.onrender.com with your actual Render service URL.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# proxy API calls to the backend
+[[redirects]]
+  from = "/api/*"
+  to = "https://taskflow-backend.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# SPA fallback: every non-file route serves index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

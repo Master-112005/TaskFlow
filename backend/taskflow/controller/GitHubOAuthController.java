@@ -45,8 +45,13 @@ public class GitHubOAuthController {
                                           @RequestParam(required = false) String picker,
                                           Authentication auth) {
         User user = access.requireUser(auth);
-        // The OAuth redirect may only land on one of these two pages.
+        // The OAuth redirect may only land on one of these pages: the profile
+        // (account linking), the admin home, or the project page (lead
+        // connecting the repository).
         String target = "/profile".equals(returnTo) ? "/profile" : "/admin";
+        if (returnTo != null && returnTo.matches("^/project/\\d+$")) {
+            target = returnTo;
+        }
         // picker=select forces GitHub's account picker (needed when adding another account).
         boolean selectAccount = "select".equals(picker);
         return Map.of("url", oauth.buildAuthorizeUrl(user, target, selectAccount));

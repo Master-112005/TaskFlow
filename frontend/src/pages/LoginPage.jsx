@@ -18,7 +18,13 @@ export default function LoginPage() {
     try {
       const { data } = await api.post('/auth/login', { email, password })
       signIn(data)
-      navigate(data.user.userType === 'ADMIN' ? '/admin' : '/home', { replace: true })
+      // A normal user must connect GitHub before entering projects — first
+      // sign-in goes to the profile's connect prompt, then straight home.
+      if (data.user.userType === 'NORMAL' && !data.user.githubConnected) {
+        navigate('/profile?connect=first', { replace: true })
+      } else {
+        navigate(data.user.userType === 'ADMIN' ? '/admin' : '/home', { replace: true })
+      }
     } catch (err) {
       setError(errorMessage(err))
     } finally {

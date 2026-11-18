@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import taskflow.dto.GitHubDtos.LinkedAccountDto;
 import taskflow.model.LinkedGithubAccount;
 import taskflow.model.Project;
+import taskflow.model.ProjectMember;
 import taskflow.model.User;
 import taskflow.model.UserType;
 import taskflow.repository.LinkedGithubAccountRepository;
@@ -20,13 +21,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
-import java.time.Duration;
-import java.time.Instant;
+import java.time.Duration;import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * GitHub OAuth ("Sign in with GitHub" style) flow for all users:
@@ -53,6 +50,67 @@ public class GitHubOAuthService {
     private record Pending(String email, Instant createdAt, String returnTo) {
     }
 
+    /**
+     * OAuth state is a signed, self-contained token instead of a server-side
+     * map: a backend restart no longer breaks a connect flow that is in
+     * flight (the old in-memory map lost every pending state on restart, and
+     * GitHub's callback then failed with "unknown state").
+     * Format: base64url(expiresAtMillis|email|returnTo) + "." + hmac
+     */
+    private String buildState(User user, String returnTo) {
+        String payload = Instant.now().plus(Duration.ofMinutes(15)).toEpochMilli()
+                + "|" + user.getEmail()
+                + "|" + (returnTo == null ? "/admin" : returnTo);
+        String encoded = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+        return encoded + "." + hmac(encoded);
+    }
+
+    private Pending decodeState(String state) {
+        if (state == null || !state.contains(".")) {
+            throw badState();
+        }
+        int sep = state.lastIndexOf('.');
+        String encoded = state.substring(0, sep);
+        String signature = state.substring(sep + 1);
+        if (!java.security.MessageDigest.isEqual(hmac(encoded).getBytes(StandardCharsets.UTF_8),
+                signature.getBytes(StandardCharsets.UTF_8))) {
+            throw badState();
+        }
+        String[] parts = new String(java.util.Base64.getUrlDecoder().decode(encoded), StandardCharsets.UTF_8)
+                .split("\\|", 3);
+        if (parts.length != 3) {
+            throw badState();
+        }
+        Instant expires;
+        try {
+            expires = Instant.ofEpochMilli(Long.parseLong(parts[0]));
+        } catch (NumberFormatException e) {
+            throw badState();
+        }
+        if (expires.isBefore(Instant.now())) {
+            throw badState();
+        }
+        return new Pending(parts[1], expires, parts[2]);
+    }
+
+    private ResponseStatusException badState() {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "Unknown or expired GitHub sign-in state — please try connecting again");
+    }
+
+    /** HMAC-SHA256 over the encoded payload, keyed with the OAuth client secret. */
+    private String hmac(String encoded) {
+        try {
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+            mac.init(new javax.crypto.spec.SecretKeySpec(
+                    clientSecret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            return HexFormat.of().formatHex(mac.doFinal(encoded.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.GeneralSecurityException e) {
+            throw new IllegalStateException("Could not sign the GitHub OAuth state", e);
+        }
+    }
+
     /** Result of finishing the OAuth flow: which GitHub login connected, whether it was already linked, and where to land. */
     public record Connected(String login, boolean existed, String returnTo) {
     }
@@ -69,28 +127,26 @@ public class GitHubOAuthService {
     private final UserRepository users;
     private final LinkedGithubAccountRepository linkedAccounts;
     private final taskflow.repository.ProjectRepository projects;
+    private final taskflow.repository.ProjectMemberRepository memberships;
+    private final GitHubService gitHubService;
     private final ObjectMapper mapper = new ObjectMapper();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
-    private final SecureRandom random = new SecureRandom();
-    /** state -> who started the flow (in-memory, expires after 10 minutes). */
-    private final Map<String, Pending> pending = new ConcurrentHashMap<>();
 
     public GitHubOAuthService(UserRepository users, LinkedGithubAccountRepository linkedAccounts,
-                              taskflow.repository.ProjectRepository projects) {
+                              taskflow.repository.ProjectRepository projects,
+                              taskflow.repository.ProjectMemberRepository memberships,
+                              GitHubService gitHubService) {
         this.users = users;
         this.linkedAccounts = linkedAccounts;
         this.projects = projects;
+        this.memberships = memberships;
+        this.gitHubService = gitHubService;
     }
 
     public String buildAuthorizeUrl(User user, String returnTo, boolean selectAccount) {
-        String state = newState();
-        pending.put(state, new Pending(user.getEmail(), Instant.now(), returnTo == null ? "/admin" : returnTo));
-
-        // drop stale entries (>10 min)
-        pending.entrySet().removeIf(e ->
-                Duration.between(e.getValue().createdAt(), Instant.now()).toMinutes() > 10);
+        String state = buildState(user, returnTo);
 
         // prompt=select_account makes GitHub show its account picker so the user
         // can connect another GitHub account without logging out of the current one.
@@ -117,11 +173,7 @@ public class GitHubOAuthService {
      * @return the GitHub login and whether that account was already linked
      */
     public Connected complete(String code, String state) {
-        Pending p = state != null ? pending.remove(state) : null;
-        if (p == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Unknown or expired GitHub sign-in state — please try connecting again");
-        }
+        Pending p = decodeState(state);
 
         String accessToken = exchangeCode(code);
         String login = fetchLogin(accessToken);
@@ -145,7 +197,7 @@ public class GitHubOAuthService {
         if (existing == null) {
             // limit: normal users one GitHub account, admins up to three
             long count = linkedAccounts.findByUserOrderByConnectedAtAsc(user).stream()
-                    .filter(a -> LinkedGithubAccount.GITHUB.equals(a.getProvider()))
+                    .filter(this::isGithubAccount)
                     .count();
             int max = maxGitHubAccounts(user);
             if (count >= max) {
@@ -180,6 +232,37 @@ public class GitHubOAuthService {
                     project.setGithubToken(accessToken);
                     projects.save(project);
                 }
+            }
+        }
+
+        // Owner-based heal: token strings can diverge (a project may hold an
+        // older token of this same login), so matching by token alone misses
+        // projects. A repo owned by the login that just connected is always
+        // safest to read with that login's fresh token — heal every project
+        // this user created on that repo.
+        for (Project project : projects.findByCreatedByOrderByCreatedAtDesc(user)) {
+            if (project.getRepoOwner() != null
+                    && login.equalsIgnoreCase(project.getRepoOwner())
+                    && !accessToken.equals(project.getGithubToken())) {
+                project.setGithubToken(accessToken);
+                projects.save(project);
+            }
+        }
+
+        // The member just (re-)connected their GitHub account: give that account
+        // push access to every project repo they belong to (but did not create).
+        // This is the companion to the approve-time invite — it covers members
+        // who joined first and linked GitHub afterwards. GitHub failures are
+        // ignored: the OAuth redirect must never break.
+        for (ProjectMember m : memberships.findByUserOrderByJoinedAtDesc(user)) {
+            Project proj = m.getProject();
+            if (proj.getCreatedBy() != null && proj.getCreatedBy().getId().equals(user.getId())) {
+                continue; // creator already has (or can refresh) their access
+            }
+            try {
+                gitHubService.inviteCollaborator(proj.getRepoOwner(), proj.getRepoName(), proj.getGithubToken(), login);
+                gitHubService.acceptRepoInvitation(accessToken, proj.getRepoOwner(), proj.getRepoName());
+            } catch (Exception ignored) {
             }
         }
 
@@ -326,10 +409,9 @@ public class GitHubOAuthService {
         return false;
     }
 
-    private String newState() {
-        byte[] bytes = new byte[16];
-        random.nextBytes(bytes);
-        return HexFormat.of().formatHex(bytes);
+    /** GitHub-linked account (legacy rows may have a NULL provider). */
+    private boolean isGithubAccount(LinkedGithubAccount a) {
+        return a.getProvider() == null || LinkedGithubAccount.GITHUB.equals(a.getProvider());
     }
 
     private String enc(String value) {
