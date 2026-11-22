@@ -123,38 +123,8 @@ export default function ProjectPage() {
           </div>
           {isAdmin && (
             <>
-              <span className="code-pill" title="Invite code">{project.inviteCode}</span>
-              <button
-                className="btn ghost pill small"
-                title="Change invite code"
-                onClick={() => {
-                  const newCode = prompt("Enter new 6-character invite code:");
-                  if (newCode && /^[A-Z2-9]{6}$/.test(newCode)) {
-                    api.put(`/projects/${project.id}/invite-code`).then(() => {
-                      setProject(prev => prev ? { ...prev, inviteCode: newCode } : null);
-                      alert("Invite code updated successfully!");
-                    }).catch(err => alert(errorMessage(err)));
-                  } else if (newCode) {
-                    alert("Invalid code format. Use 6 characters from: ABCDEFGHJKMNPQRSTUVWXYZ23456789");
-                  }
-                }}
-              >
-                Change
-              </button>
-              <button
-                className="btn ghost pill small"
-                title="Delete project"
-                onClick={() => {
-                  if (confirm("Are you sure you want to delete this project? This will also remove all join requests and members.")) {
-                    api.delete(`/projects/${project.id}`).then(() => {
-                      alert("Project deleted successfully!");
-                      navigate(-1);
-                    }).catch(err => alert(errorMessage(err)));
-                  }
-                }}
-              >
-                Delete
-              </button>
+              <span className="code-display" title="Invite code">{project.inviteCode}</span>
+              <span>...</span>
             </>
           )}
         </div>
@@ -162,19 +132,19 @@ export default function ProjectPage() {
           {hasRepo && (
             <>
               <button
-                className={`btn pill ${panel === 'issues' ? 'active' : ''}`}
+                className={`btn plain ${panel === 'issues' ? 'active' : ''}`}
                 onClick={() => setPanel(panel === 'issues' ? null : 'issues')}
               >
                 Issues
               </button>
               <button
-                className={`btn pill ${panel === 'pulls' ? 'active' : ''}`}
+                className={`btn plain ${panel === 'pulls' ? 'active' : ''}`}
                 onClick={() => setPanel(panel === 'pulls' ? null : 'pulls')}
               >
                 Pull Requests
               </button>
               <button
-                className={`btn pill ${panel === 'actions' ? 'active' : ''}`}
+                className={`btn plain ${panel === 'actions' ? 'active' : ''}`}
                 onClick={() => setPanel(panel === 'actions' ? null : 'actions')}
               >
                 Actions
@@ -183,7 +153,7 @@ export default function ProjectPage() {
           )}
           {isAdmin && (
             <button
-              className={`btn pill ${panel === 'requests' ? 'active' : ''}`}
+              className={`btn plain ${panel === 'requests' ? 'active' : ''}`}
               onClick={() => setPanel(panel === 'requests' ? null : 'requests')}
             >
               Requests
