@@ -4,6 +4,7 @@ import api, { errorMessage } from '../api'
 import { useAuth } from '../AuthContext'
 import ProfileMenu from '../components/ProfileMenu'
 import Chat from '../components/Chat'
+import ActionsPanel from '../components/ActionsPanel'
 import GitHubPanel from '../components/GitHubPanel'
 import JoinRequestsPanel from '../components/JoinRequestsPanel'
 import RepoPicker from '../components/RepoPicker'
@@ -15,7 +16,7 @@ export default function ProjectPage() {
   const { user } = useAuth()
   const [project, setProject] = useState(null)
   const [error, setError] = useState('')
-  const [panel, setPanel] = useState(null) // null | 'issues' | 'pulls' | 'requests'
+  const [panel, setPanel] = useState(null) // null | 'issues' | 'pulls' | 'actions' | 'requests'
   // private chat partner (MemberDto) — shared by the chat area and the team panel
   const [dmUser, setDmUser] = useState(null)
   // lead flow: connect GitHub, then pick the repository for a repo-less project
@@ -81,7 +82,7 @@ export default function ProjectPage() {
       })
       setProject(data)
       setRepoPickerOpen(false)
-      setSetupNote(`Repository ${data.repoOwner}/${data.repoName} connected — Issues and Pull Requests are now available.`)
+      setSetupNote(`Repository ${data.repoOwner}/${data.repoName} connected — Issues, Pull Requests and Actions are now available.`)
     } catch (err) {
       throw err // RepoPicker shows the error inline
     } finally {
@@ -139,6 +140,12 @@ export default function ProjectPage() {
               >
                 Pull Requests
               </button>
+              <button
+                className={`btn pill ${panel === 'actions' ? 'active' : ''}`}
+                onClick={() => setPanel(panel === 'actions' ? null : 'actions')}
+              >
+                Actions
+              </button>
             </>
           )}
           {isAdmin && (
@@ -159,7 +166,7 @@ export default function ProjectPage() {
             <>
               <span>
                 This project has no GitHub repository yet. Connect your GitHub account, then pick
-                the repository — after that Issues, Pull Requests and the invite-code flow work as usual.
+                the repository — after that Issues, Pull Requests, Actions and the invite-code flow work as usual.
               </span>
               <div className="repo-setup-actions">
                 <button className="btn primary sm" onClick={connectGitHub}>Connect GitHub</button>
@@ -182,7 +189,10 @@ export default function ProjectPage() {
         {panel === 'requests' && (
           <JoinRequestsPanel project={project} onClose={() => setPanel(null)} />
         )}
-        {panel && panel !== 'requests' && hasRepo && (
+        {panel === 'actions' && hasRepo && (
+          <ActionsPanel project={project} onClose={() => setPanel(null)} />
+        )}
+        {panel && panel !== 'requests' && panel !== 'actions' && hasRepo && (
           <GitHubPanel mode={panel} project={project} onClose={() => setPanel(null)} />
         )}
         <TeamPanel project={project} onOpenChat={setDmUser} />

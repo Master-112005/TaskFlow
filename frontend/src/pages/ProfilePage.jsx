@@ -314,7 +314,8 @@ export default function ProfilePage() {
             </form>
           </div>
 
-          {/* right: linked accounts (all users) */}
+          {/* right column: linked accounts, with created projects below them */}
+          <div className="profile-right">
           <section className="admin-panel github-accounts">
             <div className="panel-card-head">
               <h2>Accounts</h2>
@@ -477,6 +478,7 @@ export default function ProfilePage() {
               ))}
             </section>
           )}
+          </div>
         </div>
       </main>
     </div>

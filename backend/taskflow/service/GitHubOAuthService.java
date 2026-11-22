@@ -155,7 +155,7 @@ public class GitHubOAuthService {
         return "https://github.com/login/oauth/authorize"
                 + "?client_id=" + enc(clientId)
                 + "&redirect_uri=" + enc(redirectUri)
-                + "&scope=" + enc("repo read:user")
+                + "&scope=" + enc("repo workflow read:user")
                 + "&state=" + state
                 + "&allow_signup=false"
                 + prompt;

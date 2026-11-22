@@ -1,11 +1,22 @@
 package taskflow.controller;
 
 import taskflow.dto.GitHubDtos.BranchDto;
+import taskflow.dto.GitHubDtos.CommentDto;
+import taskflow.dto.GitHubDtos.CreateCommentRequest;
 import taskflow.dto.GitHubDtos.CreateIssueRequest;
 import taskflow.dto.GitHubDtos.CreatePullRequest;
+import taskflow.dto.GitHubDtos.CreateReviewRequest;
+import taskflow.dto.GitHubDtos.DispatchWorkflowRequest;
 import taskflow.dto.GitHubDtos.IssueDto;
+import taskflow.dto.GitHubDtos.MergePullRequest;
 import taskflow.dto.GitHubDtos.PullDto;
 import taskflow.dto.GitHubDtos.RepoDto;
+import taskflow.dto.GitHubDtos.RepoLabelDto;
+import taskflow.dto.GitHubDtos.ReviewDto;
+import taskflow.dto.GitHubDtos.UpdateIssueRequest;
+import taskflow.dto.GitHubDtos.UpdatePullRequest;
+import taskflow.dto.GitHubDtos.WorkflowDto;
+import taskflow.dto.GitHubDtos.WorkflowRunDto;
 import taskflow.dto.ProjectDtos.AttachRepoRequest;
 import taskflow.dto.ProjectDtos.CreateProjectRequest;
 import taskflow.dto.ProjectDtos.JoinRequest;
@@ -410,6 +421,81 @@ public class ProjectController {
                 () -> gitHub.createIssue(project.getRepoOwner(), project.getRepoName(), project.getGithubToken(), title, body));
     }
 
+    /** Comments on one issue (oldest first). */
+    @GetMapping("/{id}/issues/{number}/comments")
+    public List<CommentDto> issueComments(@PathVariable long id, @PathVariable long number,
+                                          Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.listIssueComments(project.getRepoOwner(), project.getRepoName(), number, project.getGithubToken()),
+                () -> gitHub.listIssueComments(project.getRepoOwner(), project.getRepoName(), number, user.getGithubToken()));
+    }
+
+    /** Add a comment to an issue. */
+    @PostMapping("/{id}/issues/{number}/comments")
+    public CommentDto addIssueComment(@PathVariable long id, @PathVariable long number,
+                                      @Valid @RequestBody CreateCommentRequest request,
+                                      Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        String body = request.body().trim();
+        return withProjectFallback(user, project,
+                () -> gitHub.addIssueComment(project.getRepoOwner(), project.getRepoName(), number,
+                        user.getGithubToken(), body),
+                () -> gitHub.addIssueComment(project.getRepoOwner(), project.getRepoName(), number,
+                        project.getGithubToken(), body));
+    }
+
+    /** Edit an issue: close/reopen, change title/body, or replace labels. */
+    @PatchMapping("/{id}/issues/{number}")
+    public IssueDto updateIssue(@PathVariable long id, @PathVariable long number,
+                                @RequestBody UpdateIssueRequest request, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        String state = request.state();
+        if (state != null && !state.equals("open") && !state.equals("closed")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "state must be open or closed");
+        }
+        String title = request.title() == null ? null : request.title().trim();
+        if (title != null && title.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "The title cannot be empty");
+        }
+        String body = request.body();
+        List<String> labels = request.labels();
+        return withProjectFallback(user, project,
+                () -> gitHub.updateIssue(project.getRepoOwner(), project.getRepoName(), number,
+                        user.getGithubToken(), state, title, body, labels),
+                () -> gitHub.updateIssue(project.getRepoOwner(), project.getRepoName(), number,
+                        project.getGithubToken(), state, title, body, labels));
+    }
+
+    /** Delete an issue (GitHub also removes its comments). */
+    @DeleteMapping("/{id}/issues/{number}")
+    public void deleteIssue(@PathVariable long id, @PathVariable long number, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        withProjectFallback(user, project,
+                () -> {
+                    gitHub.deleteIssue(project.getRepoOwner(), project.getRepoName(), number, user.getGithubToken());
+                    return null;
+                },
+                () -> {
+                    gitHub.deleteIssue(project.getRepoOwner(), project.getRepoName(), number, project.getGithubToken());
+                    return null;
+                });
+    }
+
+    /** Labels available in the project's repository. */
+    @GetMapping("/{id}/labels")
+    public List<RepoLabelDto> labels(@PathVariable long id, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.listLabels(project.getRepoOwner(), project.getRepoName(), project.getGithubToken()),
+                () -> gitHub.listLabels(project.getRepoOwner(), project.getRepoName(), user.getGithubToken()));
+    }
+
     /** Branches of the project's repo (for the pull-request form). */
     @GetMapping("/{id}/branches")
     public List<BranchDto> branches(@PathVariable long id, Authentication auth) {
@@ -418,6 +504,133 @@ public class ProjectController {
         return readWithFallback(user, project,
                 () -> gitHub.listBranches(project.getRepoOwner(), project.getRepoName(), project.getGithubToken()),
                 () -> gitHub.listBranches(project.getRepoOwner(), project.getRepoName(), user.getGithubToken()));
+    }
+
+    // ------------------------------------------------------------------
+    // GitHub Actions (workflow runs, manually triggered from this app)
+    // ------------------------------------------------------------------
+
+    /** Actions workflows defined in the project's repo. */
+    @GetMapping("/{id}/actions/workflows")
+    public List<WorkflowDto> workflows(@PathVariable long id, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.listWorkflows(project.getRepoOwner(), project.getRepoName(), project.getGithubToken()),
+                () -> gitHub.listWorkflows(project.getRepoOwner(), project.getRepoName(), user.getGithubToken()));
+    }
+
+    /** Recent Actions runs for the project's repo (newest first). */
+    @GetMapping("/{id}/actions/runs")
+    public List<WorkflowRunDto> actionRuns(@PathVariable long id, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.listWorkflowRuns(project.getRepoOwner(), project.getRepoName(), project.getGithubToken()),
+                () -> gitHub.listWorkflowRuns(project.getRepoOwner(), project.getRepoName(), user.getGithubToken()));
+    }
+
+    /** Run a workflow manually on the chosen branch (workflow_dispatch). */
+    @PostMapping("/{id}/actions/workflows/{workflowId}/dispatch")
+    public void dispatchWorkflow(@PathVariable long id, @PathVariable long workflowId,
+                                 @Valid @RequestBody DispatchWorkflowRequest request,
+                                 Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        String ref = request.ref().trim();
+        withProjectFallback(user, project,
+                () -> {
+                    gitHub.dispatchWorkflow(project.getRepoOwner(), project.getRepoName(),
+                            user.getGithubToken(), workflowId, ref);
+                    return null;
+                },
+                () -> {
+                    gitHub.dispatchWorkflow(project.getRepoOwner(), project.getRepoName(),
+                            project.getGithubToken(), workflowId, ref);
+                    return null;
+                });
+    }
+
+    /** Cancel a queued or running workflow run. */
+    @PostMapping("/{id}/actions/runs/{runId}/cancel")
+    public void cancelWorkflowRun(@PathVariable long id, @PathVariable long runId, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        withProjectFallback(user, project,
+                () -> {
+                    gitHub.cancelWorkflowRun(project.getRepoOwner(), project.getRepoName(),
+                            user.getGithubToken(), runId);
+                    return null;
+                },
+                () -> {
+                    gitHub.cancelWorkflowRun(project.getRepoOwner(), project.getRepoName(),
+                            project.getGithubToken(), runId);
+                    return null;
+                });
+    }
+
+    /** Re-run a finished workflow run. */
+    @PostMapping("/{id}/actions/runs/{runId}/rerun")
+    public void rerunWorkflowRun(@PathVariable long id, @PathVariable long runId, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        withProjectFallback(user, project,
+                () -> {
+                    gitHub.rerunWorkflowRun(project.getRepoOwner(), project.getRepoName(),
+                            user.getGithubToken(), runId);
+                    return null;
+                },
+                () -> {
+                    gitHub.rerunWorkflowRun(project.getRepoOwner(), project.getRepoName(),
+                            project.getGithubToken(), runId);
+                    return null;
+                });
+    }
+
+    /** Enable a workflow so it can run again. */
+    @PostMapping("/{id}/actions/workflows/{workflowId}/enable")
+    public void enableWorkflow(@PathVariable long id, @PathVariable long workflowId, Authentication auth) {
+        setWorkflowEnabled(id, workflowId, true, auth);
+    }
+
+    /** Disable a workflow (manual and event triggers are blocked). */
+    @PostMapping("/{id}/actions/workflows/{workflowId}/disable")
+    public void disableWorkflow(@PathVariable long id, @PathVariable long workflowId, Authentication auth) {
+        setWorkflowEnabled(id, workflowId, false, auth);
+    }
+
+    private void setWorkflowEnabled(long id, long workflowId, boolean enabled, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        withProjectFallback(user, project,
+                () -> {
+                    gitHub.setWorkflowEnabled(project.getRepoOwner(), project.getRepoName(),
+                            user.getGithubToken(), workflowId, enabled);
+                    return null;
+                },
+                () -> {
+                    gitHub.setWorkflowEnabled(project.getRepoOwner(), project.getRepoName(),
+                            project.getGithubToken(), workflowId, enabled);
+                    return null;
+                });
+    }
+
+    /** Delete a workflow run and its logs. */
+    @DeleteMapping("/{id}/actions/runs/{runId}")
+    public void deleteActionRun(@PathVariable long id, @PathVariable long runId, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        withProjectFallback(user, project,
+                () -> {
+                    gitHub.deleteWorkflowRun(project.getRepoOwner(), project.getRepoName(),
+                            user.getGithubToken(), runId);
+                    return null;
+                },
+                () -> {
+                    gitHub.deleteWorkflowRun(project.getRepoOwner(), project.getRepoName(),
+                            project.getGithubToken(), runId);
+                    return null;
+                });
     }
 
     /** Open a pull request in the project's repo (any team member). */
@@ -434,6 +647,113 @@ public class ProjectController {
         return withProjectFallback(user, project,
                 () -> gitHub.createPull(project.getRepoOwner(), project.getRepoName(), user.getGithubToken(), title, head, base, body, draft),
                 () -> gitHub.createPull(project.getRepoOwner(), project.getRepoName(), project.getGithubToken(), title, head, base, body, draft));
+    }
+
+    /** Comments on a pull request (GitHub serves PR comments from the issues endpoint). */
+    @GetMapping("/{id}/pulls/{number}/comments")
+    public List<CommentDto> pullComments(@PathVariable long id, @PathVariable long number,
+                                         Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.listIssueComments(project.getRepoOwner(), project.getRepoName(), number, project.getGithubToken()),
+                () -> gitHub.listIssueComments(project.getRepoOwner(), project.getRepoName(), number, user.getGithubToken()));
+    }
+
+    /** Add a comment to a pull request. */
+    @PostMapping("/{id}/pulls/{number}/comments")
+    public CommentDto addPullComment(@PathVariable long id, @PathVariable long number,
+                                     @Valid @RequestBody CreateCommentRequest request,
+                                     Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        String body = request.body().trim();
+        return withProjectFallback(user, project,
+                () -> gitHub.addIssueComment(project.getRepoOwner(), project.getRepoName(), number,
+                        user.getGithubToken(), body),
+                () -> gitHub.addIssueComment(project.getRepoOwner(), project.getRepoName(), number,
+                        project.getGithubToken(), body));
+    }
+
+    /** Reviews submitted on a pull request. */
+    @GetMapping("/{id}/pulls/{number}/reviews")
+    public List<ReviewDto> pullReviews(@PathVariable long id, @PathVariable long number,
+                                       Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        return readWithFallback(user, project,
+                () -> gitHub.listReviews(project.getRepoOwner(), project.getRepoName(), number, project.getGithubToken()),
+                () -> gitHub.listReviews(project.getRepoOwner(), project.getRepoName(), number, user.getGithubToken()));
+    }
+
+    /** Submit a review: APPROVE, REQUEST_CHANGES or COMMENT. */
+    @PostMapping("/{id}/pulls/{number}/reviews")
+    public ReviewDto submitReview(@PathVariable long id, @PathVariable long number,
+                                  @Valid @RequestBody CreateReviewRequest request,
+                                  Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        String event = request.event().trim().toUpperCase();
+        if (!Set.of("APPROVE", "REQUEST_CHANGES", "COMMENT").contains(event)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "event must be APPROVE, REQUEST_CHANGES or COMMENT");
+        }
+        String body = request.body() == null ? "" : request.body().trim();
+        String reviewEvent = event;
+        return withProjectFallback(user, project,
+                () -> gitHub.submitReview(project.getRepoOwner(), project.getRepoName(), number,
+                        user.getGithubToken(), reviewEvent, body),
+                () -> gitHub.submitReview(project.getRepoOwner(), project.getRepoName(), number,
+                        project.getGithubToken(), reviewEvent, body));
+    }
+
+    /** Merge an open pull request (merge commit, squash or rebase). */
+    @PostMapping("/{id}/pulls/{number}/merge")
+    public void mergePull(@PathVariable long id, @PathVariable long number,
+                          @RequestBody(required = false) MergePullRequest request,
+                          Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        String method = request == null || request.mergeMethod() == null || request.mergeMethod().isBlank()
+                ? "merge" : request.mergeMethod().trim().toLowerCase();
+        if (!Set.of("merge", "squash", "rebase").contains(method)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "mergeMethod must be merge, squash or rebase");
+        }
+        String mergeMethod = method;
+        withProjectFallback(user, project,
+                () -> {
+                    gitHub.mergePull(project.getRepoOwner(), project.getRepoName(), number,
+                            user.getGithubToken(), mergeMethod);
+                    return null;
+                },
+                () -> {
+                    gitHub.mergePull(project.getRepoOwner(), project.getRepoName(), number,
+                            project.getGithubToken(), mergeMethod);
+                    return null;
+                });
+    }
+
+    /** Edit a pull request: close/reopen, change title/body. */
+    @PatchMapping("/{id}/pulls/{number}")
+    public PullDto updatePull(@PathVariable long id, @PathVariable long number,
+                              @RequestBody UpdatePullRequest request, Authentication auth) {
+        User user = access.requireUser(auth);
+        Project project = access.requireAccess(id, user);
+        String state = request.state();
+        if (state != null && !state.equals("open") && !state.equals("closed")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "state must be open or closed");
+        }
+        String title = request.title() == null ? null : request.title().trim();
+        if (title != null && title.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "The title cannot be empty");
+        }
+        String body = request.body();
+        return withProjectFallback(user, project,
+                () -> gitHub.updatePull(project.getRepoOwner(), project.getRepoName(), number,
+                        user.getGithubToken(), state, title, body),
+                () -> gitHub.updatePull(project.getRepoOwner(), project.getRepoName(), number,
+                        project.getGithubToken(), state, title, body));
     }
 
     /**

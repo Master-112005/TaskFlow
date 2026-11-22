@@ -1,13 +1,11 @@
 package taskflow.controller;
 
 import taskflow.dto.GitHubDtos.LinkedAccountDto;
-import taskflow.model.LinkedGithubAccount;
 import taskflow.model.User;
 import taskflow.repository.LinkedGithubAccountRepository;
 import taskflow.service.AccessService;
 import taskflow.service.GitHubOAuthService;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,7 +14,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URI;
 import java.util.List;

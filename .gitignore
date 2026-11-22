@@ -11,3 +11,8 @@ backend/local-secrets.properties
 .vscode/
 *.iml
 .DS_Store
+
+
+.codex
+graphify-out/
+AGENTS.md

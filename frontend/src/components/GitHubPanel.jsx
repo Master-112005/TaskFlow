@@ -7,26 +7,50 @@ const STATE_BADGE = {
   merged: 'state-merged'
 }
 
+function reviewClass(state) {
+  switch (state) {
+    case 'APPROVED': return 'run-success'
+    case 'CHANGES_REQUESTED': return 'run-failure'
+    default: return 'run-neutral'
+  }
+}
+
 /**
- * Slide-in panel listing GitHub issues (mode="issues")
- * or pull requests (mode="pulls") for a project.
- * The "+" button in the header opens a form to create a new one.
+ * Slide-in panel for GitHub issues (mode="issues") and pull requests
+ * (mode="pulls"). The list creates new items; clicking one opens an in-app
+ * detail view with comments, reviews and lifecycle controls (close/reopen,
+ * edit, delete, merge, approve/request changes).
  */
-export default function GitHubPanel({ mode, project, onClose }) {
-  const [items, setItems] = useState(null)
-  const [error, setError] = useState('')
-  const [creating, setCreating] = useState(false) // create form open
-  const [branches, setBranches] = useState(null) // for the PR form
-  const [busy, setBusy] = useState(false)
-  const [formError, setFormError] = useState('')
+export default function GitHubPanel({ mode, project }) {
   const isIssues = mode === 'issues'
   const endpoint = isIssues ? 'issues' : 'pulls'
+  const base = `/projects/${project.id}`
+
+  const [items, setItems] = useState(null)
+  const [error, setError] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [branches, setBranches] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [formError, setFormError] = useState('')
+
+  // detail view
+  const [detail, setDetail] = useState(null)
+  const [comments, setComments] = useState(null)
+  const [reviews, setReviews] = useState(null)
+  const [detailError, setDetailError] = useState('')
+  const [detailBusy, setDetailBusy] = useState(false)
+  const [commentText, setCommentText] = useState('')
+  const [editOpen, setEditOpen] = useState(false)
+  const [editTitle, setEditTitle] = useState('')
+  const [editBody, setEditBody] = useState('')
+  const [deleteArmed, setDeleteArmed] = useState(false)
+  const [mergeMethod, setMergeMethod] = useState('merge')
 
   async function load() {
     setItems(null)
     setError('')
     try {
-      const { data } = await api.get(`/projects/${project.id}/${endpoint}`)
+      const { data } = await api.get(`${base}/${endpoint}`)
       setItems(data)
     } catch (e) {
       setError(errorMessage(e))
@@ -37,7 +61,7 @@ export default function GitHubPanel({ mode, project, onClose }) {
   async function loadBranches() {
     setBranches(null)
     try {
-      const { data } = await api.get(`/projects/${project.id}/branches`)
+      const { data } = await api.get(`${base}/branches`)
       setBranches(data)
     } catch (e) {
       setBranches([])
@@ -49,10 +73,11 @@ export default function GitHubPanel({ mode, project, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id, endpoint])
 
-  // switching panels resets the form state
+  // switching panels resets the form and detail state
   useEffect(() => {
     setCreating(false)
     setFormError('')
+    setDetail(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode])
 
@@ -69,12 +94,12 @@ export default function GitHubPanel({ mode, project, onClose }) {
     setFormError('')
     try {
       if (isIssues) {
-        await api.post(`/projects/${project.id}/issues`, {
+        await api.post(`${base}/issues`, {
           title: f.title.value.trim(),
           body: f.body.value.trim()
         })
       } else {
-        await api.post(`/projects/${project.id}/pulls`, {
+        await api.post(`${base}/pulls`, {
           title: f.title.value.trim(),
           head: f.head.value,
           base: f.base.value,
@@ -88,6 +113,146 @@ export default function GitHubPanel({ mode, project, onClose }) {
       setFormError(errorMessage(err))
     } finally {
       setBusy(false)
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Detail view
+  // ---------------------------------------------------------------
+
+  async function openDetail(item) {
+    setDetail(item)
+    setComments(null)
+    setReviews(null)
+    setDetailError('')
+    setCommentText('')
+    setEditOpen(false)
+    setDeleteArmed(false)
+    await loadThread(item)
+  }
+
+  async function loadThread(item) {
+    try {
+      const { data } = await api.get(`${base}/${endpoint}/${item.number}/comments`)
+      setComments(data)
+    } catch (e) {
+      setComments([])
+      setDetailError(errorMessage(e))
+    }
+    if (!isIssues) {
+      try {
+        const { data } = await api.get(`${base}/pulls/${item.number}/reviews`)
+        setReviews(data)
+      } catch (e) {
+        setReviews([])
+      }
+    }
+  }
+
+  async function refreshDetail() {
+    if (!detail) return
+    await loadThread(detail)
+    await load()
+  }
+
+  async function patchDetail(payload) {
+    setDetailBusy(true)
+    setDetailError('')
+    try {
+      const { data } = await api.patch(`${base}/${endpoint}/${detail.number}`, payload)
+      setDetail(data)
+      load()
+      return true
+    } catch (e) {
+      setDetailError(errorMessage(e))
+      return false
+    } finally {
+      setDetailBusy(false)
+    }
+  }
+
+  async function toggleState() {
+    await patchDetail({ state: detail.state === 'open' ? 'closed' : 'open' })
+  }
+
+  function openEdit() {
+    setEditTitle(detail.title)
+    setEditBody(detail.body || '')
+    setEditOpen(true)
+    setDetailError('')
+  }
+
+  async function saveEdit(e) {
+    e.preventDefault()
+    const ok = await patchDetail({ title: editTitle.trim(), body: editBody })
+    if (ok) setEditOpen(false)
+  }
+
+  async function deleteIssue() {
+    if (!deleteArmed) {
+      setDeleteArmed(true)
+      return
+    }
+    setDetailBusy(true)
+    setDetailError('')
+    try {
+      await api.delete(`${base}/issues/${detail.number}`)
+      setDetail(null)
+      load()
+    } catch (e) {
+      setDetailError(errorMessage(e))
+    } finally {
+      setDetailBusy(false)
+    }
+  }
+
+  async function merge() {
+    setDetailBusy(true)
+    setDetailError('')
+    try {
+      await api.post(`${base}/pulls/${detail.number}/merge`, { mergeMethod })
+      setDetail({ ...detail, state: 'closed' })
+      load()
+    } catch (e) {
+      setDetailError(errorMessage(e))
+    } finally {
+      setDetailBusy(false)
+    }
+  }
+
+  async function submitReview(event) {
+    setDetailBusy(true)
+    setDetailError('')
+    try {
+      await api.post(`${base}/pulls/${detail.number}/reviews`, {
+        event,
+        body: commentText.trim()
+      })
+      setCommentText('')
+      await loadThread(detail)
+      load()
+    } catch (e) {
+      setDetailError(errorMessage(e))
+    } finally {
+      setDetailBusy(false)
+    }
+  }
+
+  async function submitComment() {
+    if (!commentText.trim()) return
+    setDetailBusy(true)
+    setDetailError('')
+    try {
+      const { data } = await api.post(`${base}/${endpoint}/${detail.number}/comments`, {
+        body: commentText.trim()
+      })
+      setComments((prev) => [...(prev || []), data])
+      setCommentText('')
+      load()
+    } catch (e) {
+      setDetailError(errorMessage(e))
+    } finally {
+      setDetailBusy(false)
     }
   }
 
@@ -106,6 +271,171 @@ export default function GitHubPanel({ mode, project, onClose }) {
       setError(errorMessage(err))
     }
   }
+
+  // ---------------------------------------------------------------
+  // Detail rendering
+  // ---------------------------------------------------------------
+
+  if (detail) {
+    const open = detail.state === 'open'
+    return (
+      <aside className={`side-panel ${mode}`}>
+        <div className="panel-head">
+          <h2>#{detail.number}</h2>
+          <div>
+            <button className="btn ghost" onClick={refreshDetail} title="Refresh">Refresh</button>
+          </div>
+        </div>
+        <div className="panel-sub">
+          {project.repoOwner}/{project.repoName} · {isIssues ? 'issue' : 'pull request'}
+        </div>
+
+        <div className="panel-body">
+          <button className="btn ghost sm detail-back" onClick={() => setDetail(null)}>
+            &lt; Back to {isIssues ? 'issues' : 'pull requests'}
+          </button>
+
+          <div className="panel-card-top">
+            <span className={`state-badge ${STATE_BADGE[detail.state] || ''}`}>{detail.state}</span>
+            <span className="panel-number">
+              {detail.author ? `by ${detail.author}` : ''}
+              {detail.createdAt ? ` · ${formatWhen(detail.createdAt)}` : ''}
+            </span>
+          </div>
+          <h3 className="detail-title">{detail.title}</h3>
+
+          {!isIssues && (
+            <div className="detail-branches">
+              {detail.headBranch} &rarr; {detail.baseBranch}
+              {detail.isDraft ? ' · draft' : ''}
+            </div>
+          )}
+          {isIssues && detail.labels?.length > 0 && (
+            <div className="panel-meta">
+              <span className="panel-labels">{detail.labels.join(', ')}</span>
+            </div>
+          )}
+
+          <div className="detail-body">{detail.body?.trim() ? detail.body : 'No description.'}</div>
+
+          <div className="detail-actions">
+            <button className="btn sm" onClick={toggleState} disabled={detailBusy}>
+              {open ? 'Close' : 'Reopen'}
+            </button>
+            <button className="btn sm" onClick={openEdit} disabled={detailBusy}>Edit</button>
+
+            {!isIssues && open && (
+              <>
+                <select value={mergeMethod} onChange={(e) => setMergeMethod(e.target.value)}>
+                  <option value="merge">Merge commit</option>
+                  <option value="squash">Squash and merge</option>
+                  <option value="rebase">Rebase and merge</option>
+                </select>
+                <button className="btn primary sm" onClick={merge} disabled={detailBusy}>
+                  {detailBusy ? 'Working…' : 'Merge'}
+                </button>
+                <button className="btn sm" onClick={() => submitReview('APPROVE')} disabled={detailBusy}>
+                  Approve
+                </button>
+                <button className="btn sm" onClick={() => submitReview('REQUEST_CHANGES')} disabled={detailBusy}>
+                  Request changes
+                </button>
+              </>
+            )}
+
+            {isIssues && (
+              <button className="btn sm run-cancel" onClick={deleteIssue} disabled={detailBusy}>
+                {deleteArmed ? 'Confirm delete' : 'Delete'}
+              </button>
+            )}
+          </div>
+
+          {editOpen && (
+            <form className="panel-form detail-edit" onSubmit={saveEdit}>
+              <label>
+                Title
+                <input
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  required
+                  maxLength={256}
+                  autoFocus
+                />
+              </label>
+              <label>
+                Description
+                <textarea
+                  rows={5}
+                  value={editBody}
+                  onChange={(e) => setEditBody(e.target.value)}
+                />
+              </label>
+              <div className="detail-actions">
+                <button className="btn primary sm" disabled={detailBusy}>
+                  {detailBusy ? 'Saving…' : 'Save'}
+                </button>
+                <button type="button" className="btn sm" onClick={() => setEditOpen(false)}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {detailError && <div className="form-error">{detailError}</div>}
+
+          {!isIssues && reviews?.length > 0 && (
+            <section className="thread">
+              <h4 className="thread-title">Reviews</h4>
+              {reviews.map((r) => (
+                <div key={r.id} className="comment-row">
+                  <div className="comment-head">
+                    <strong>{r.author}</strong>
+                    <span className={`state-badge ${reviewClass(r.state)}`}>{r.state}</span>
+                    <span>{formatWhen(r.submittedAt)}</span>
+                  </div>
+                  {r.body && <div className="comment-body">{r.body}</div>}
+                </div>
+              ))}
+            </section>
+          )}
+
+          <section className="thread">
+            <h4 className="thread-title">Comments</h4>
+            {comments === null && <div className="panel-loading">Loading…</div>}
+            {comments?.length === 0 && <div className="panel-empty small">No comments yet.</div>}
+            {comments?.map((c) => (
+              <div key={c.id} className="comment-row">
+                <div className="comment-head">
+                  <strong>{c.author}</strong>
+                  <span>{formatWhen(c.createdAt)}</span>
+                </div>
+                <div className="comment-body">{c.body}</div>
+              </div>
+            ))}
+
+            <textarea
+              className="comment-box"
+              rows={3}
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              placeholder={isIssues ? 'Write a comment…' : 'Write a comment or review note…'}
+            />
+            <div className="detail-actions">
+              <button
+                className="btn primary sm"
+                onClick={submitComment}
+                disabled={detailBusy || !commentText.trim()}
+              >
+                {detailBusy ? 'Sending…' : 'Add comment'}
+              </button>
+            </div>
+          </section>
+        </div>
+      </aside>
+    )
+  }
+
+  // ---------------------------------------------------------------
+  // List rendering
+  // ---------------------------------------------------------------
 
   return (
     <aside className={`side-panel ${mode}`}>
@@ -195,12 +525,11 @@ export default function GitHubPanel({ mode, project, onClose }) {
         )}
         {items &&
           items.map((it) => (
-            <a
+            <button
               key={it.number}
-              className="panel-card"
-              href={it.htmlUrl}
-              target="_blank"
-              rel="noreferrer"
+              type="button"
+              className="panel-card panel-card-btn"
+              onClick={() => openDetail(it)}
             >
               <div className="panel-card-top">
                 <span className={`state-badge ${STATE_BADGE[it.state] || ''}`}>
@@ -220,9 +549,12 @@ export default function GitHubPanel({ mode, project, onClose }) {
                   </span>
                 )}
                 {it.author && <span>by {it.author}</span>}
+                {isIssues && it.comments > 0 && (
+                  <span>{it.comments} comment{it.comments === 1 ? '' : 's'}</span>
+                )}
                 <span>{formatWhen(it.createdAt)}</span>
               </div>
-            </a>
+            </button>
           ))}
       </div>
       {error && <div className="chat-error">{error}</div>}

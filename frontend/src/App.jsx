@@ -33,7 +33,9 @@ function OAuthRedirectGuard() {
 
   useEffect(() => {
     if (hasOAuthPayload) {
-      window.location.replace('http://localhost:8080/api/github/oauth/callback' + location.search)
+      // relative on purpose: works in dev (Vite proxy) and in production
+      // (host proxy forwards /api/* to the backend) with zero config
+      window.location.replace('/api/github/oauth/callback' + location.search)
     }
   }, [hasOAuthPayload, location.search])
 

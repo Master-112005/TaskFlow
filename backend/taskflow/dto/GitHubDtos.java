@@ -51,6 +51,97 @@ public class GitHubDtos {
     public record BranchDto(String name) {
     }
 
+    /** A GitHub Actions workflow defined in the repo. */
+    public record WorkflowDto(long id, String name, String path, String state, String htmlUrl) {
+        public static WorkflowDto from(JsonNode n) {
+            return new WorkflowDto(
+                    n.path("id").asLong(),
+                    n.path("name").asText(),
+                    n.path("path").asText(null),
+                    n.path("state").asText(null),
+                    n.path("html_url").asText(null));
+        }
+    }
+
+    /** One execution of a GitHub Actions workflow. */
+    public record WorkflowRunDto(long id, String name, long workflowId, String status,
+                                 String conclusion, String branch, String event, String actor,
+                                 int runNumber, String createdAt, String updatedAt, String htmlUrl) {
+        public static WorkflowRunDto from(JsonNode n) {
+            String conclusion = n.path("conclusion").isNull() ? null : n.path("conclusion").asText(null);
+            return new WorkflowRunDto(
+                    n.path("id").asLong(),
+                    n.path("name").asText(),
+                    n.path("workflow_id").asLong(),
+                    n.path("status").asText(null),
+                    conclusion,
+                    n.path("head_branch").asText(null),
+                    n.path("event").asText(null),
+                    n.path("actor").path("login").asText(null),
+                    n.path("run_number").asInt(0),
+                    n.path("created_at").asText(null),
+                    n.path("updated_at").asText(null),
+                    n.path("html_url").asText(null));
+        }
+    }
+
+    /** Request body for manually running a workflow on a branch. */
+    public record DispatchWorkflowRequest(@jakarta.validation.constraints.NotBlank String ref) {
+    }
+
+    /** One comment on an issue or pull request. */
+    public record CommentDto(long id, String author, String body, String createdAt, String htmlUrl) {
+        public static CommentDto from(JsonNode n) {
+            return new CommentDto(
+                    n.path("id").asLong(),
+                    n.path("user").path("login").asText(null),
+                    n.path("body").asText(""),
+                    n.path("created_at").asText(null),
+                    n.path("html_url").asText(null));
+        }
+    }
+
+    /** A pull-request review: APPROVED / CHANGES_REQUESTED / COMMENTED / DISMISSED. */
+    public record ReviewDto(long id, String author, String state, String body, String submittedAt) {
+        public static ReviewDto from(JsonNode n) {
+            return new ReviewDto(
+                    n.path("id").asLong(),
+                    n.path("user").path("login").asText(null),
+                    n.path("state").asText(null),
+                    n.path("body").asText(""),
+                    n.path("submitted_at").asText(null));
+        }
+    }
+
+    /** A label available in the repository. */
+    public record RepoLabelDto(String name, String color, String description) {
+        public static RepoLabelDto from(JsonNode n) {
+            return new RepoLabelDto(
+                    n.path("name").asText(),
+                    n.path("color").asText(null),
+                    n.path("description").asText(null));
+        }
+    }
+
+    /** Partial issue edit: a null field is left unchanged. */
+    public record UpdateIssueRequest(String state, String title, String body, List<String> labels) {
+    }
+
+    /** Partial pull-request edit: a null field is left unchanged. */
+    public record UpdatePullRequest(String state, String title, String body) {
+    }
+
+    public record CreateCommentRequest(@jakarta.validation.constraints.NotBlank String body) {
+    }
+
+    /** event: APPROVE, REQUEST_CHANGES or COMMENT. */
+    public record CreateReviewRequest(@jakarta.validation.constraints.NotBlank String event, String body) {
+    }
+
+    /** mergeMethod: merge (default), squash or rebase. */
+    public record MergePullRequest(String mergeMethod) {
+    }
+
     public record IssueDto(long number, String title, String state, String author,
                            String createdAt, String updatedAt, String htmlUrl, String body,
                            int comments, List<String> labels) {
