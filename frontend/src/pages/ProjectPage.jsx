@@ -124,7 +124,6 @@ export default function ProjectPage() {
           {isAdmin && (
             <>
               <span className="code-display" title="Invite code">{project.inviteCode}</span>
-              <span>...</span>
             </>
           )}
         </div>
