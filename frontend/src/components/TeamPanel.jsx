@@ -79,6 +79,23 @@ export default function TeamPanel({ project, onOpenChat }) {
             {isAdmin && (
               <div className="proj-row"><span>Invite code</span>
                 <span className="code-pill small">{project.inviteCode}</span>
+                <button
+                  className="btn ghost pill smaller"
+                  title="Change invite code"
+                  onClick={() => {
+                    const newCode = prompt("Enter new 6-character invite code:");
+                    if (newCode && /^[A-Z2-9]{6}$/.test(newCode)) {
+                      api.put(`/projects/${project.id}/invite-code`).then(() => {
+                        alert("Invite code updated successfully!");
+                        window.location.reload();
+                      }).catch(err => alert(errorMessage(err)));
+                    } else if (newCode) {
+                      alert("Invalid code format. Use 6 characters from: ABCDEFGHJKMNPQRSTUVWXYZ23456789");
+                    }
+                  }}
+                >
+                  Change
+                </button>
               </div>
             )}
           </div>

@@ -549,6 +549,12 @@ export default function GitHubPanel({ mode, project }) {
                   </span>
                 )}
                 {it.author && <span>by {it.author}</span>}
+                {/* Show TaskFlow account name alongside GitHub author */}
+                {it.author && (
+                  <span className="panel-taskflow-author">
+                    {project.repoOwner ? ', from project' : ''}
+                  </span>
+                )}
                 {isIssues && it.comments > 0 && (
                   <span>{it.comments} comment{it.comments === 1 ? '' : 's'}</span>
                 )}

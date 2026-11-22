@@ -20,7 +20,10 @@ export function AuthProvider({ children }) {
       return
     }
     api.get('/auth/me')
-      .then((res) => setUser(res.data))
+      .then((res) => {
+        setUser(res.data)
+        // Keep the valid token running - do not auto-logout on transient errors
+      })
       .catch((err) => {
         // only treat a real 401 as signed-out; keep the session on transient errors
         if (err?.response?.status === 401) {
@@ -29,6 +32,8 @@ export function AuthProvider({ children }) {
           localStorage.removeItem('tf_user')
           setUser(null)
         }
+        // For non-401 errors (network, 500, etc.), keep the token and user
+        // so the session persists through transient backend issues
       })
       .finally(() => setLoading(false))
   }, [])
@@ -40,10 +45,15 @@ export function AuthProvider({ children }) {
   }
 
   async function refresh() {
-    const { data } = await api.get('/auth/me')
-    localStorage.setItem('tf_user', JSON.stringify(data))
-    setUser(data)
-    return data
+    try {
+      const { data } = await api.get('/auth/me')
+      localStorage.setItem('tf_user', JSON.stringify(data))
+      setUser(data)
+      return data
+    } catch (err) {
+      // Keep current user on refresh failure - don't auto-logout
+      console.warn('Refresh failed, keeping current session', err)
+    }
   }
 
   function signOut() {

@@ -373,6 +373,22 @@ public class ProjectController {
                 .toList();
     }
 
+    /** Admin/lead/manager: change the project's invite code. */
+    @PutMapping("/{id}/invite-code")
+    public ProjectDto changeInviteCode(@PathVariable long id, Authentication auth) {
+        User user = access.requireUser(auth);
+        access.requireAdmin(user);
+        Project project = access.requireAccess(id, user);
+        if (!canManage(user, project)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Only this project's creator or leads can change the invite code");
+        }
+        String newCode = generateUniqueCode();
+        project.setInviteCode(newCode);
+        projects.save(project);
+        return ProjectDto.from(project, members.findByProject(project).size());
+    }
+
     /** Remove a teammate from the project (admins only; the creator cannot be removed). */
     @DeleteMapping("/{id}/members/{userId}")
     public void removeMember(@PathVariable long id, @PathVariable long userId, Authentication auth) {
